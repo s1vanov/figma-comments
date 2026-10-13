@@ -6,19 +6,22 @@ inside the workspace; it never writes to Figma (spec section 6).
 Which threads become blocks (spec 4.2 and 5.3):
 
 * NEW and CLIENT_REPLIED threads;
-* threads carried from an earlier round: their state action is `hold`, or `react` with a
-  leftover draft, and they are not closed now. They keep kind and draft, and are rendered
-  as `hold`;
+* carried threads: the designer's unfinished work. Before anything else the PREVIOUS round
+  file (round-(n-1).md) is read; a file that does not parse stops the command. Its blocks
+  not fully published are carried with kind and draft as `hold` (action `skip` is recorded
+  in state with the time of that round's collection). State entries not covered by the
+  file carry the same way (hold; reply or reply+react not published yet; react with a
+  leftover draft). A carried thread that is closed now is not rendered, its entry stays;
 * excluded: closed threads, threads with an unknown author (their authors are reported),
-  and threads whose state action is `skip` (counted in `skipped` when they would
-  otherwise have been included).
+  and skipped threads. A skip hides a thread only until a client writes after it was
+  decided (`skipped_through`); then the thread returns as "client replied".
 """
 from __future__ import annotations
 
 import os
 import tempfile
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -36,8 +39,8 @@ from .model import (
     unknown_authors,
 )
 from .participants import load_participants
-from .roundfile import _NODE_RE, RoundItem, RoundMeta, render_round
-from .state import WORKSPACE_DIR, ThreadState, ensure_workspace, load_state, save_state
+from .roundfile import _NODE_RE, Block, RoundItem, RoundMeta, RoundParseError, parse_round, render_round
+from .state import WORKSPACE_DIR, State, ThreadState, ensure_workspace, load_state, save_state
 from .urls import FileRef, comment_link
 
 NO_ELEMENT = "(no element)"
@@ -66,6 +69,8 @@ class CollectResult:
     orphans: int = 0
     n: int = 0
     threads: int = 0
+    held_resolved: int = 0  # carried threads that were closed meanwhile (entry and draft kept)
+    carried_from: Optional[str] = None  # name of the previous round file when it supplied blocks
 
 
 @dataclass
@@ -145,10 +150,100 @@ def _heading_author(thread: Thread, snap: Snapshot) -> Tuple[str, str]:
     return _handle(thread.root, snap.people), "team"
 
 
-def _carry_state(ts: Optional[ThreadState]) -> bool:
+def _carry_state(ts: Optional[ThreadState]) -> Optional[Tuple[str, str]]:
+    """(kind, draft) to carry into the next round, or None when nothing is left to do."""
     if ts is None:
+        return None
+    if ts.action == "hold":
+        return ts.kind, ts.draft
+    if ts.action == "reply":
+        return None if ts.published_reply else (ts.kind, ts.draft)
+    if ts.action == "reply+react":
+        if not ts.published_reply:
+            return ts.kind, ts.draft
+        return None if ts.reacted else (ts.kind, "")  # the reply is out; only the reaction is left
+    if ts.action == "react" and ts.draft.strip():
+        return ts.kind, ts.draft
+    return None
+
+
+def _apply_block(state: State, block: Block, collected_at: str) -> str:
+    """Fold one block of the previous round file into the state; return its fate.
+
+    "skip" | "carry" | "done" | "none". The file is the designer's latest word, so for a
+    block that says something it overrides the thread's state entry. A blank hold says
+    nothing and leaves the state alone.
+    """
+    root = block.root_id
+    existing = state.threads.get(root)
+    if block.action == "skip":
+        state.threads[root] = ThreadState(
+            kind=block.kind, action="skip", skipped_through=collected_at,
+            published_reply=existing.published_reply if existing else None,
+            reacted=existing.reacted if existing else False,
+        )
+        return "skip"
+    if block.action == "hold":
+        if not (block.kind or block.reply.strip()):
+            return "none"
+        fate, draft = "carry", block.reply
+    elif block.action == "reply":
+        fate, draft = ("done", "") if block.published_reply else ("carry", block.reply)
+    elif block.action == "reply+react":
+        if block.published_reply and block.reacted:
+            fate, draft = "done", ""
+        elif block.published_reply:
+            fate, draft = "carry", ""  # only the reaction is left
+        else:
+            fate, draft = "carry", block.reply
+    else:  # react
+        fate, draft = ("done", "") if block.reacted else ("carry", "")
+    if fate == "carry":
+        state.threads[root] = ThreadState(
+            kind=block.kind, action="hold", draft=draft,
+            published_reply=block.published_reply, reacted=block.reacted,
+        )
+    else:
+        state.threads[root] = ThreadState(
+            kind=block.kind, action=block.action,
+            published_reply=block.published_reply, reacted=block.reacted,
+        )
+    return fate
+
+
+def _read_previous_round(ws: Path, state: State, key: str) -> Tuple[Optional[str], List[Block]]:
+    """Blocks of round-(n-1).md, or (None, []) when there is no such file."""
+    if not state.rounds:
+        return None, []
+    name = "round-%02d.md" % len(state.rounds)
+    path = ws / name
+    if not path.exists():
+        return None, []
+    try:
+        meta, blocks = parse_round(path.read_text(encoding="utf-8"))
+    except RoundParseError as exc:
+        raise ValueError(
+            "%s has errors (%s); fix it or move it aside before collecting" % (name, exc)
+        ) from None
+    except UnicodeDecodeError:
+        raise ValueError("%s is not valid UTF-8; fix it or move it aside before collecting" % name) from None
+    if meta.file_key != key:
+        raise ValueError("%s belongs to another Figma file; move it aside before collecting" % name)
+    return name, blocks
+
+
+def _client_wrote_after(thread: Thread, snap: Snapshot, through: Optional[str]) -> bool:
+    try:
+        limit = parse_ts(through) if through else None
+    except ValueError:
+        return True  # an unreadable time must show the thread, not hide it
+    if limit is None:
         return False
-    return ts.action == "hold" or (ts.action == "react" and bool(ts.draft.strip()))
+    return any(
+        _uid(m) != snap.owner_id and _uid(m) in snap.people and snap.people[_uid(m)].side == "client"
+        and parse_ts(m["created_at"]) > limit
+        for m in thread.messages
+    )
 
 
 def _utc_z(moment: datetime) -> str:
@@ -158,23 +253,36 @@ def _utc_z(moment: datetime) -> str:
 
 
 def _write_new_file(path: Path, text: str) -> None:
-    """Create `path` atomically; refuse to replace an existing file (it may hold the designer's edits)."""
-    if path.exists():
-        raise ValueError(
-            "%s already exists but state.json has no such round; move or delete it first "
-            "(collect never overwrites a round file)" % path.name
-        )
+    """Create `path` atomically and never replace an existing file (it may hold the designer's edits).
+
+    The text goes to a temp file that is then hard-linked to the final name: the link fails
+    if the name exists, so there is no gap between a check and the creation. Where hard links
+    are unavailable the file is created with O_EXCL instead.
+    """
+    exists = ValueError(
+        "round file %s already exists; move or delete it first "
+        "(collect never overwrites a round file)" % path.name
+    )
     fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
-        os.replace(tmp, str(path))
-    except BaseException:
+        try:
+            os.link(tmp, str(path))
+        except FileExistsError:
+            raise exists from None
+        except OSError:
+            try:
+                out = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+            except FileExistsError:
+                raise exists from None
+            with os.fdopen(out, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+    finally:
         try:
             os.unlink(tmp)
         except OSError:
             pass
-        raise
 
 
 def collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectResult:
@@ -183,21 +291,39 @@ def collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectRe
     state = load_state(ws)  # a missing workspace gives an empty State; corrupt state stops here
     snap = fetch_snapshot(api, ref, ws)
 
+    n = len(state.rounds) + 1
+    collected_at = _utc_z(now)
+    last_collected = state.rounds[-1]["collected_at"] if state.rounds else None
+    carried_from, prev_blocks = _read_previous_round(ws, state, key)
+    from_file = set()
+    for block in prev_blocks:
+        if _apply_block(state, block, last_collected or collected_at) == "carry":
+            from_file.add(block.root_id)
+
     included: List[Tuple[Thread, str, str, str]] = []  # (thread, group label, kind, draft)
-    skipped = 0
-    carried = 0
+    skipped = carried = held_resolved = carried_file = 0
     for thread in snap.threads:
         group = snap.group_of[thread.root_id]
-        if group in (Group.RESOLVED, Group.UNKNOWN_AUTHOR):
-            continue
         ts = state.threads.get(thread.root_id)
+        pending = _carry_state(ts)
+        if group is Group.RESOLVED:
+            if pending is not None:
+                held_resolved += 1  # not rendered; the entry and its draft stay in state
+            continue
+        if group is Group.UNKNOWN_AUTHOR:
+            continue
         if ts is not None and ts.action == "skip":
-            if group in _BLOCK_LABELS:
+            if group not in _BLOCK_LABELS:
+                continue
+            if _client_wrote_after(thread, snap, ts.skipped_through or last_collected):
+                included.append((thread, "client replied", "", ""))
+            else:
                 skipped += 1
             continue
-        if ts is not None and _carry_state(ts):
-            included.append((thread, "carried", ts.kind, ts.draft))
+        if pending is not None:
+            included.append((thread, "carried", pending[0], pending[1]))
             carried += 1
+            carried_file += thread.root_id in from_file
         elif group in _BLOCK_LABELS:
             included.append((thread, _BLOCK_LABELS[group], "", ""))
     included.sort(key=lambda row: parse_ts(row[0].root["created_at"]))  # stable: ties keep API order
@@ -205,8 +331,6 @@ def collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectRe
     node_ids = [n for n in dict.fromkeys(node_of(row[0]) for row in included) if n]
     names = api.nodes(key, node_ids) if node_ids else {}
 
-    n = len(state.rounds) + 1
-    collected_at = _utc_z(now)
     items: List[RoundItem] = []
     for thread, label, kind, draft in included:
         node_id = node_of(thread)
@@ -248,4 +372,6 @@ def collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectRe
         orphans=snap.orphans,
         n=n,
         threads=len(snap.threads),
+        held_resolved=held_resolved,
+        carried_from=carried_from if carried_file else None,
     )

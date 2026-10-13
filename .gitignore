@@ -8,3 +8,5 @@ __pycache__/
 .ruff_cache/
 .superpowers/
 .claude/
+comments.live.json
+writes.jsonl

@@ -8,7 +8,8 @@ with 1; usage errors exit with 2; nothing prints a traceback for them.
 Environment:
 * FIGMA_COMMENTS_REPLAY=<dir>  serve Figma from fixture files (tests, scenarios); no token
   is looked up in this mode;
-* FIGMA_COMMENTS_REPLAY_FAIL=<n>:<status>  fault injection for the replay transport.
+* FIGMA_COMMENTS_REPLAY_FAIL=<n>:<status> or <n>:lost  fault injection for the replay transport;
+* FIGMA_COMMENTS_DEBUG=1  show the traceback of an unexpected failure.
 """
 from __future__ import annotations
 
@@ -48,6 +49,7 @@ from .urls import FileRef, comment_link, parse_file_ref
 PROG = "figma_comments.py"
 REPLAY_ENV = "FIGMA_COMMENTS_REPLAY"
 REPLAY_FAIL_ENV = "FIGMA_COMMENTS_REPLAY_FAIL"
+DEBUG_ENV = "FIGMA_COMMENTS_DEBUG"
 LIST_LIMIT = 10
 
 _EXPECTED_ERRORS = (
@@ -100,10 +102,19 @@ def _counts_line(counts: Dict[Group, int]) -> str:
     return ", ".join(parts) if parts else "none"
 
 
+HANDLE_LIMIT = 40
+
+
+def _capped(value: Any, limit: int = HANDLE_LIMIT) -> str:
+    text = _clean(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _unknown_lines(unknown: List[AuthorSummary], show_all: bool, hint: str) -> List[str]:
     rows = [
-        '  %s | %s | %d message%s | "%s"'
-        % (_clean(a.user_id), _clean(a.handle), a.count, "" if a.count == 1 else "s", _clean(a.sample))
+        '  %s | "%s" | %d message%s | "%s"'
+        % (_capped(a.user_id) or "(no id)", _capped(a.handle), a.count,
+           "" if a.count == 1 else "s", _clean(a.sample))
         for a in unknown
     ]
     return _cut(rows, show_all, hint)
@@ -112,6 +123,8 @@ def _unknown_lines(unknown: List[AuthorSummary], show_all: bool, hint: str) -> L
 def _make_api() -> FigmaAPI:
     replay = os.environ.get(REPLAY_ENV)
     if replay:
+        print("WARNING: %s is set (%s); using offline fixtures, nothing reaches Figma."
+              % (REPLAY_ENV, _clean(replay)), file=sys.stderr)
         transport: Any = ReplayTransport(Path(replay), fail=os.environ.get(REPLAY_FAIL_ENV))
         token = "replay-token"
     else:
@@ -139,8 +152,12 @@ def cmd_collect(args: argparse.Namespace) -> int:
     ]
     if result.carried:
         lines.append(
-            "Warning: %d unpublished block(s) from earlier rounds were carried into this file."
-            % result.carried
+            "carried %d unpublished blocks from %s"
+            % (result.carried, result.carried_from or "earlier rounds (state.json)")
+        )
+    if result.held_resolved:
+        lines.append(
+            "%d held threads were resolved meanwhile (drafts kept)" % result.held_resolved
         )
     if result.unknown:
         lines.append(
@@ -236,7 +253,12 @@ def cmd_participants_set(args: argparse.Namespace) -> int:
         handle = handle or ""
 
     role = args.role if args.role is not None else (existing.role if existing else "")
-    lead = bool(args.lead) or bool(existing and existing.lead)
+    if args.lead:
+        lead = True
+    elif args.no_lead:
+        lead = False
+    else:
+        lead = bool(existing and existing.lead)
     people[user_id] = Participant(user_id=user_id, handle=handle, side=args.side, role=role, lead=lead)
 
     ws = ensure_workspace(Path.cwd(), ref.file_key)
@@ -284,7 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("user_id", help="Figma user id (shown by collect and status)")
     ps.add_argument("--side", required=True, choices=SIDES)
     ps.add_argument("--role", default=None, help="free text, e.g. 'Marketing lead'")
-    ps.add_argument("--lead", action="store_true", help="the client's main person")
+    lead_group = ps.add_mutually_exclusive_group()
+    lead_group.add_argument("--lead", action="store_true", help="the client's main person")
+    lead_group.add_argument("--no-lead", action="store_true", help="clear the lead mark")
     ps.add_argument("--handle", default=None, help="display name; default: taken from the comments")
     ps.set_defaults(func=cmd_participants_set)
     return parser
@@ -303,4 +327,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return func(args)
     except _EXPECTED_ERRORS as exc:
         print("error: %s" % _clean(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:  # last resort: no traceback unless asked for
+        if os.environ.get(DEBUG_ENV) == "1":
+            raise
+        print("error: unexpected failure (%s); run with %s=1 for a traceback"
+              % (type(exc).__name__, DEBUG_ENV), file=sys.stderr)
         return 1

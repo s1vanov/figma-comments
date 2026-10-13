@@ -1,5 +1,7 @@
 import json
+import os
 import tempfile
+from unittest import mock
 import unittest
 from collections import Counter
 from datetime import datetime, timezone
@@ -10,12 +12,13 @@ from tests.helpers import KEY, OWNER, api_for, big_comments, big_nodes, make_rep
 
 from fclib.collect import CollectResult, collect
 from fclib.model import AuthorSummary, Group
-from fclib.roundfile import parse_round
+from fclib.roundfile import mark_published, parse_round
 from fclib.state import State, ThreadState, load_state, save_state
 from fclib.urls import FileRef, comment_link
 
 NOW = datetime(2026, 10, 13, 10, 0, 0, tzinfo=timezone.utc)
 REF = FileRef(KEY, None)
+LATE = "2026-10-13T09:00:00Z"  # after every message of the basic fixture
 
 # Expected group of every thread of the `basic` fixture (fixtures/basic/README.md).
 EXPECTED = {
@@ -152,7 +155,7 @@ class CollectTests(CollectBase):
 
     def test_react_with_leftover_draft_is_carried_as_hold(self):
         save_state(self.ws, State(
-            rounds=[{"n": 1, "collected_at": "x"}],
+            rounds=[{"n": 1, "collected_at": LATE}],
             threads={
                 "4200115": ThreadState(kind="confirmation", action="react", draft="Thanks!"),
                 "4200116": ThreadState(kind="confirmation", action="react", draft=""),
@@ -167,7 +170,7 @@ class CollectTests(CollectBase):
 
     def test_carried_thread_closed_meanwhile_is_dropped(self):
         save_state(self.ws, State(
-            rounds=[{"n": 1, "collected_at": "x"}],
+            rounds=[{"n": 1, "collected_at": LATE}],
             threads={"4200101": ThreadState(kind="edit", action="hold", draft="old")},
         ))
         result = self.run_collect()
@@ -177,8 +180,8 @@ class CollectTests(CollectBase):
 
     def test_skip_not_reappearing(self):
         save_state(self.ws, State(
-            rounds=[{"n": 1, "collected_at": "x"}],
-            threads={"4200116": ThreadState(kind="unclear", action="skip")},
+            rounds=[{"n": 1, "collected_at": LATE}],
+            threads={"4200116": ThreadState(kind="unclear", action="skip", skipped_through=LATE)},
         ))
         result = self.run_collect()
         _, blocks = self.blocks(result.round_path)
@@ -249,6 +252,199 @@ class CollectTests(CollectBase):
         self.assertEqual(len(blocks), 150)  # the NEW quarter
         self.assertEqual(result.groups[Group.READY_TO_CLOSE], 150)
         self.assertEqual(len(result.unknown), 150)
+
+
+def edit_block(text, root, kind, action, reply=""):
+    """Rewrite the editable fields of one block of a round file."""
+    start = text.index("root=%s " % root)
+    fields = text.index("\nkind:", start) + 1
+    end = text.find("\n## ", fields)
+    end = len(text) if end < 0 else end + 1
+    return text[:fields] + "kind: %s\naction: %s\nreply:\n%s\n\n" % (kind, action, reply) + text[end:]
+
+
+class PreviousRoundTests(CollectBase):
+    def collect_first(self):
+        return self.run_collect().round_path
+
+    def second(self):
+        return self.run_collect(now=datetime(2026, 10, 14, 9, 0, 0, tzinfo=timezone.utc))
+
+    def test_unpublished_work_in_the_previous_file_is_carried(self):
+        path = self.collect_first()
+        text = path.read_text(encoding="utf-8")
+        text = edit_block(text, "4200109", "edit", "reply", "Shortened to three words.")
+        text = edit_block(text, "4200115", "question", "hold", "Draft about the brand book")
+        text = edit_block(text, "4200116", "unclear", "reply+react", "What exactly is off?")
+        text = edit_block(text, "4200111", "confirmation", "react")
+        path.write_text(text, encoding="utf-8")
+
+        result = self.second()
+        self.assertEqual(result.carried, 4)
+        self.assertEqual(result.carried_from, "round-01.md")
+        _, blocks = self.blocks(result.round_path)
+        by = {b.root_id: b for b in blocks}
+        self.assertEqual((by["4200109"].kind, by["4200109"].action, by["4200109"].reply),
+                         ("edit", "hold", "Shortened to three words."))
+        self.assertEqual((by["4200115"].kind, by["4200115"].reply), ("question", "Draft about the brand book"))
+        self.assertEqual((by["4200116"].kind, by["4200116"].action, by["4200116"].reply),
+                         ("unclear", "hold", "What exactly is off?"))
+        self.assertEqual((by["4200111"].kind, by["4200111"].action, by["4200111"].reply),
+                         ("confirmation", "hold", ""))
+        self.assertEqual((by["4200112"].kind, by["4200112"].reply), ("", ""))  # untouched stays blank
+        state = load_state(self.ws)
+        self.assertEqual(state.threads["4200109"].draft, "Shortened to three words.")
+        self.assertEqual(state.threads["4200109"].action, "hold")
+
+    def test_two_rounds_in_a_row_keep_the_draft(self):
+        path = self.collect_first()
+        path.write_text(edit_block(path.read_text(encoding="utf-8"), "4200109", "edit", "reply", "Keep me"),
+                        encoding="utf-8")
+        self.second()
+        third = self.run_collect(now=datetime(2026, 10, 15, 9, 0, 0, tzinfo=timezone.utc))
+        _, blocks = self.blocks(third.round_path)
+        kept = [b for b in blocks if b.root_id == "4200109"][0]
+        self.assertEqual((kept.kind, kept.reply), ("edit", "Keep me"))
+
+    def test_published_blocks_are_not_carried_but_a_pending_reaction_is(self):
+        path = self.collect_first()
+        text = path.read_text(encoding="utf-8")
+        text = edit_block(text, "4200109", "edit", "reply", "Done")
+        text = edit_block(text, "4200115", "question", "reply+react", "Because brand")
+        text = edit_block(text, "4200116", "unclear", "reply+react", "Fine")
+        text = mark_published(text, "4200109", "9100001", False)
+        text = mark_published(text, "4200115", "9100002", False)  # reply out, reaction pending
+        text = mark_published(text, "4200116", "9100003", True)   # fully published
+        path.write_text(text, encoding="utf-8")
+        result = self.second()
+        _, blocks = self.blocks(result.round_path)
+        by = {b.root_id: b for b in blocks}
+        self.assertEqual(result.carried, 1)
+        self.assertEqual((by["4200115"].kind, by["4200115"].action, by["4200115"].reply), ("question", "hold", ""))
+        # nothing was really posted in this replay, so those threads are plain NEW blocks again
+        self.assertEqual((by["4200109"].kind, by["4200109"].reply), ("", ""))
+        self.assertEqual((by["4200116"].kind, by["4200116"].reply), ("", ""))
+
+    def test_skip_in_the_previous_file_is_recorded_with_the_collection_time(self):
+        path = self.collect_first()
+        path.write_text(edit_block(path.read_text(encoding="utf-8"), "4200116", "", "skip"), encoding="utf-8")
+        result = self.second()
+        _, blocks = self.blocks(result.round_path)
+        self.assertNotIn("4200116", {b.root_id for b in blocks})
+        self.assertEqual(result.skipped, 1)
+        ts = load_state(self.ws).threads["4200116"]
+        self.assertEqual((ts.action, ts.skipped_through), ("skip", "2026-10-13T10:00:00Z"))
+
+    def test_corrupt_previous_file_refuses(self):
+        path = self.collect_first()
+        path.write_text(path.read_text(encoding="utf-8").replace("\nkind:", "\nstray line\nkind:", 1), encoding="utf-8")
+        before = (self.ws / "state.json").read_text(encoding="utf-8")
+        with self.assertRaises(ValueError) as cm:
+            self.second()
+        self.assertRegex(
+            str(cm.exception),
+            r"^round-01\.md has errors \(line \d+: .*\); fix it or move it aside before collecting$",
+        )
+        self.assertFalse((self.ws / "round-02.md").exists())
+        self.assertEqual((self.ws / "state.json").read_text(encoding="utf-8"), before)
+
+    def test_previous_file_of_another_file_key_refuses(self):
+        path = self.collect_first()
+        path.write_text(path.read_text(encoding="utf-8").replace(KEY, "A" * 22), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.second()
+
+    def test_missing_previous_file_is_fine(self):
+        path = self.collect_first()
+        path.unlink()
+        self.assertEqual(self.second().round_path.name, "round-02.md")
+
+    def test_state_entries_with_unpublished_replies_are_carried(self):
+        save_state(self.ws, State(
+            rounds=[{"n": 1, "collected_at": LATE}],
+            threads={
+                "4200109": ThreadState(kind="edit", action="reply", draft="Queued"),
+                "4200115": ThreadState(kind="question", action="reply+react", draft="Q", published_reply="9100001"),
+                "4200116": ThreadState(kind="unclear", action="reply", draft="Sent", published_reply="9100002"),
+            },
+        ))
+        result = self.run_collect()
+        _, blocks = self.blocks(result.round_path)
+        by = {b.root_id: b for b in blocks}
+        self.assertEqual((by["4200109"].kind, by["4200109"].action, by["4200109"].reply), ("edit", "hold", "Queued"))
+        self.assertEqual((by["4200115"].kind, by["4200115"].reply), ("question", ""))
+        self.assertEqual(by["4200116"].reply, "")
+        self.assertEqual(result.carried, 2)
+
+    def test_held_thread_resolved_meanwhile_keeps_its_draft(self):
+        path = self.collect_first()
+        path.write_text(edit_block(path.read_text(encoding="utf-8"), "4200109", "edit", "hold", "My draft"),
+                        encoding="utf-8")
+        live_path = self.replay / "comments.live.json"  # the first collect made it; it is what Figma "says" now
+        live = json.loads(live_path.read_text(encoding="utf-8"))
+        for c in live["comments"]:
+            if c["id"] == "4200109":
+                c["resolved_at"] = "2026-10-13T12:00:00.000Z"
+        live_path.write_text(json.dumps(live), encoding="utf-8")
+        result = self.second()
+        _, blocks = self.blocks(result.round_path)
+        self.assertNotIn("4200109", {b.root_id for b in blocks})
+        self.assertEqual((result.held_resolved, result.carried), (1, 0))
+        self.assertEqual(load_state(self.ws).threads["4200109"].draft, "My draft")
+
+
+class SkipReturnsTests(CollectBase):
+    def test_new_client_message_brings_a_skipped_thread_back(self):
+        save_state(self.ws, State(
+            rounds=[{"n": 1, "collected_at": LATE}],
+            threads={"4200116": ThreadState(kind="unclear", action="skip", skipped_through="2026-10-10T00:00:00Z")},
+        ))
+        result = self.run_collect()
+        _, blocks = self.blocks(result.round_path)
+        self.assertIn("4200116", {b.root_id for b in blocks})
+        self.assertEqual(result.skipped, 0)
+        heading = [l for l in result.round_path.read_text(encoding="utf-8").splitlines()
+                   if l.startswith("## ") and "Hero subtitle" in l]
+        self.assertTrue(heading and heading[0].endswith("client replied"), heading)
+
+    def test_skip_without_a_time_uses_the_previous_collection(self):
+        save_state(self.ws, State(
+            rounds=[{"n": 1, "collected_at": LATE}],
+            threads={"4200116": ThreadState(kind="unclear", action="skip")},
+        ))
+        self.assertEqual(self.run_collect().skipped, 1)
+
+    def test_unreadable_skip_time_shows_the_thread(self):
+        save_state(self.ws, State(
+            rounds=[{"n": 1, "collected_at": LATE}],
+            threads={"4200116": ThreadState(kind="unclear", action="skip", skipped_through="garbage")},
+        ))
+        result = self.run_collect()
+        self.assertEqual(result.skipped, 0)
+        self.assertIn("4200116", {b.root_id for b in self.blocks(result.round_path)[1]})
+
+
+class RoundFileCreationTests(CollectBase):
+    def test_lost_race_is_an_error_not_an_overwrite(self):
+        real_link = os.link
+
+        def racing_link(src, dst, *a, **k):
+            Path(dst).write_text("the other process won", encoding="utf-8")
+            return real_link(src, dst, *a, **k)
+
+        with mock.patch("fclib.collect.os.link", racing_link):
+            with self.assertRaises(ValueError) as cm:
+                self.run_collect()
+        self.assertIn("already exists", str(cm.exception))
+        self.assertEqual((self.ws / "round-01.md").read_text(encoding="utf-8"), "the other process won")
+        self.assertEqual(list(self.ws.glob("*.tmp")), [])
+        self.assertEqual(load_state(self.ws).rounds, [])
+
+    def test_filesystem_without_hard_links_still_works(self):
+        with mock.patch("fclib.collect.os.link", side_effect=OSError(95, "not supported")):
+            result = self.run_collect()
+        self.assertTrue(result.round_path.exists())
+        self.assertEqual(list(self.ws.glob("*.tmp")), [])
 
 
 if __name__ == "__main__":

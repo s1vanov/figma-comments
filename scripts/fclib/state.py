@@ -34,6 +34,9 @@ class ThreadState:
     draft: str = ""
     published_reply: Optional[str] = None
     reacted: bool = False
+    # For action "skip": collected_at of the round in which the skip was decided. A client
+    # message newer than this brings the thread back (it is not hidden for good).
+    skipped_through: Optional[str] = None
 
 
 @dataclass
@@ -77,7 +80,7 @@ def save_state(ws: Path, state: State) -> None:
     payload = {
         "version": STATE_VERSION,
         "rounds": state.rounds,
-        "threads": {rid: asdict(ts) for rid, ts in state.threads.items()},
+        "threads": {rid: _thread_to_json(ts) for rid, ts in state.threads.items()},
     }
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"  # serialise before touching disk
     fd, tmp = tempfile.mkstemp(prefix=STATE_FILE + ".", suffix=".tmp", dir=str(ws))
@@ -93,6 +96,13 @@ def save_state(ws: Path, state: State) -> None:
         except OSError:
             pass
         raise
+
+
+def _thread_to_json(ts: ThreadState) -> Dict[str, Any]:
+    data = asdict(ts)
+    if data["skipped_through"] is None:
+        del data["skipped_through"]  # optional field: files without skips look as before
+    return data
 
 
 def _bad(path: Path, what: str) -> ValueError:
@@ -124,12 +134,15 @@ def _state_from_json(data: Any, path: Path) -> State:
         draft = t.get("draft", "")
         published = t.get("published_reply")
         reacted = t.get("reacted", False)
+        skipped_through = t.get("skipped_through")
         if not (isinstance(kind, str) and isinstance(action, str) and isinstance(draft, str)
-                and (published is None or isinstance(published, str)) and isinstance(reacted, bool)):
+                and (published is None or isinstance(published, str)) and isinstance(reacted, bool)
+                and (skipped_through is None or isinstance(skipped_through, str))):
             raise _bad(path, "thread %r has a field of the wrong type" % rid)
         if kind and kind not in KINDS:
             raise _bad(path, "thread %r has an unknown kind" % rid)
         if action not in ACTIONS:
             raise _bad(path, "thread %r has an unknown action" % rid)
-        threads[rid] = ThreadState(kind=kind, action=action, draft=draft, published_reply=published, reacted=reacted)
+        threads[rid] = ThreadState(kind=kind, action=action, draft=draft, published_reply=published,
+                                reacted=reacted, skipped_through=skipped_through)
     return State(rounds=rounds, threads=threads)

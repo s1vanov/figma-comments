@@ -71,6 +71,26 @@ class StateTests(unittest.TestCase):
         back = load_state(self.ws)
         self.assertEqual(back, st)
 
+    def test_skipped_through_roundtrip_and_is_optional(self):
+        st = State(threads={
+            "1": ThreadState(action="skip", skipped_through="2026-10-13T10:00:00Z"),
+            "2": ThreadState(),
+        })
+        save_state(self.ws, st)
+        raw = json.loads((self.ws / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw["version"], 1)
+        self.assertEqual(raw["threads"]["1"]["skipped_through"], "2026-10-13T10:00:00Z")
+        self.assertNotIn("skipped_through", raw["threads"]["2"])
+        self.assertEqual(load_state(self.ws), st)
+        # a version-1 file written before the field existed still loads
+        raw["threads"]["1"].pop("skipped_through")
+        (self.ws / "state.json").write_text(json.dumps(raw), encoding="utf-8")
+        self.assertIsNone(load_state(self.ws).threads["1"].skipped_through)
+        raw["threads"]["1"]["skipped_through"] = 5
+        (self.ws / "state.json").write_text(json.dumps(raw), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            load_state(self.ws)
+
     def test_file_format(self):
         st = State(threads={"1": ThreadState(draft="Привіт")})
         save_state(self.ws, st)

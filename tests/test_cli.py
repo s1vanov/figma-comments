@@ -19,6 +19,14 @@ from fclib.state import load_state
 from fclib.token_store import TokenMissing
 from fclib.urls import comment_link
 
+BANNER = "WARNING: FIGMA_COMMENTS_REPLAY is set (%s); using offline fixtures, nothing reaches Figma."
+
+
+def quiet(err):
+    """stderr without the replay banner."""
+    return "".join(l + "\n" for l in err.splitlines() if not l.startswith("WARNING: FIGMA_COMMENTS_REPLAY"))
+
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "figma_comments.py"
 
 
@@ -52,7 +60,7 @@ class CommandTests(CliBase):
     def test_collect_prints_a_summary_and_writes_the_round(self):
         put_participants(self.cwd)
         code, out, err = self.run_cli("collect", KEY)
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, quiet(err)), (0, ""))
         self.assertTrue((self.ws / "round-01.md").exists())
         self.assertIn("round-01.md", out)
         self.assertIn("unknown-1", out)
@@ -70,7 +78,7 @@ class CommandTests(CliBase):
     def test_status_lists_ready_to_close(self):
         put_participants(self.cwd)
         code, out, err = self.run_cli("status", KEY)
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, quiet(err)), (0, ""))
         self.assertIn(comment_link(KEY, "1:4", "4200104"), out.splitlines())
         self.assertIn("unknown-1", out)
         # status only reads: no round, no state
@@ -87,7 +95,7 @@ class CommandTests(CliBase):
 
     def test_participants_list_without_file_does_not_create_anything(self):
         code, out, err = self.run_cli("participants", "list", KEY)
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, quiet(err)), (0, ""))
         self.assertIn("No participants", out)
         self.assertFalse((self.cwd / ".figma-comments").exists())
 
@@ -103,7 +111,7 @@ class CommandTests(CliBase):
     def test_participants_set_new_takes_the_handle_from_the_comments(self):
         put_participants(self.cwd)
         code, out, err = self.run_cli("participants", "set", KEY, "unknown-1", "--side", "team", "--role", "Developer")
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, quiet(err)), (0, ""))
         person = load_participants(str(self.ws / "participants.json"))["unknown-1"]
         self.assertEqual((person.handle, person.side, person.role, person.lead), ("Dev", "team", "Developer", False))
         # the author is no longer unknown
@@ -128,8 +136,28 @@ class CommandTests(CliBase):
         # no replay, no token lookup: --handle makes the command purely local
         with mock.patch.object(cli, "get_token", side_effect=AssertionError("must not look up a token")):
             code, _, err = self.run_cli("participants", "set", KEY, "7", "--side", "client", "--handle", "Zed", replay=False)
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, quiet(err)), (0, ""))
         self.assertEqual(load_participants(str(self.ws / "participants.json"))["7"].handle, "Zed")
+
+    def test_no_lead_clears_the_mark(self):
+        put_participants(self.cwd)
+        self.assertEqual(self.run_cli("participants", "set", KEY, "client-1", "--side", "client", "--no-lead")[0], 0)
+        self.assertFalse(load_participants(str(self.ws / "participants.json"))["client-1"].lead)
+        code, _, err = self.run_cli("participants", "set", KEY, "client-1", "--side", "client", "--lead", "--no-lead")
+        self.assertEqual(code, 2)
+
+    def test_unknown_author_line_is_quoted_and_capped(self):
+        data = json.loads((self.replay / "comments.json").read_text(encoding="utf-8"))
+        for c in data["comments"]:
+            if c["id"] == "4200118":
+                c["user"] = {"id": "", "handle": "H" * 80}
+        (self.replay / "comments.json").write_text(json.dumps(data), encoding="utf-8")
+        put_participants(self.cwd)
+        _, out, _ = self.run_cli("status", KEY)
+        line = [l for l in out.splitlines() if "(no id)" in l]
+        self.assertEqual(len(line), 1, out)
+        self.assertIn('"%s…"' % ("H" * 39), line[0])
+        self.assertNotIn("H" * 40, line[0])
 
     def test_participants_set_unreadable_comments_still_saves(self):
         with mock.patch.object(cli, "get_token", side_effect=TokenMissing("no token here")):
@@ -137,6 +165,70 @@ class CommandTests(CliBase):
         self.assertEqual(code, 0)
         self.assertIn("handle", err)
         self.assertEqual(load_participants(str(self.ws / "participants.json"))["7"].handle, "")
+
+
+class ReplayBannerTests(CliBase):
+    def test_banner_present_when_replay_is_set(self):
+        put_participants(self.cwd)
+        for argv in (("status", KEY), ("collect", KEY)):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual(code, 0)
+                self.assertIn(BANNER % self.replay, err)
+                self.assertNotIn("WARNING", out)
+        code, _, err = self.run_cli("participants", "set", KEY, "unknown-1", "--side", "team")
+        self.assertIn(BANNER % self.replay, err)
+
+    def test_banner_absent_without_replay(self):
+        with mock.patch.object(cli, "get_token", side_effect=TokenMissing("no token")):
+            code, _, err = self.run_cli("status", KEY, replay=False)
+        self.assertEqual(code, 1)
+        self.assertNotIn("FIGMA_COMMENTS_REPLAY", err)
+        code, _, err = self.run_cli("participants", "set", KEY, "7", "--side", "team", "--handle", "Z", replay=False)
+        self.assertEqual((code, err), (0, ""))
+
+    def test_banner_comes_before_a_replay_error(self):
+        (self.replay / "me.json").unlink()
+        code, _, err = self.run_cli("status", KEY)
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("WARNING: FIGMA_COMMENTS_REPLAY is set"))
+
+
+class CarryOutputTests(CliBase):
+    def test_collect_reports_carried_and_resolved_held(self):
+        put_participants(self.cwd)
+        self.assertEqual(self.run_cli("collect", KEY)[0], 0)
+        path = self.ws / "round-01.md"
+        text = path.read_text(encoding="utf-8")
+        i = text.index("root=4200109 ")
+        j = text.index("\nkind:", i) + 1
+        k = text.index("\n## ", j) + 1
+        text = text[:j] + "kind: edit\naction: reply\nreply:\nDone.\n\n" + text[k:]
+        i = text.index("root=4200115 ")
+        j = text.index("\nkind:", i) + 1
+        k = text.index("\n## ", j) + 1
+        text = text[:j] + "kind: question\naction: hold\nreply:\nDraft\n\n" + text[k:]
+        path.write_text(text, encoding="utf-8")
+        live = json.loads((self.replay / "comments.live.json").read_text(encoding="utf-8"))
+        for c in live["comments"]:
+            if c["id"] == "4200115":
+                c["resolved_at"] = "2026-10-13T12:00:00.000Z"
+        (self.replay / "comments.live.json").write_text(json.dumps(live), encoding="utf-8")
+        code, out, _ = self.run_cli("collect", KEY)
+        self.assertEqual(code, 0)
+        self.assertIn("carried 1 unpublished blocks from round-01.md", out.splitlines())
+        self.assertIn("1 held threads were resolved meanwhile (drafts kept)", out.splitlines())
+
+    def test_corrupt_previous_round_is_exit_1(self):
+        put_participants(self.cwd)
+        self.run_cli("collect", KEY)
+        path = self.ws / "round-01.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("\nkind:", "\nstray\nkind:", 1), encoding="utf-8")
+        code, out, err = self.run_cli("collect", KEY)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("round-01.md has errors (line", quiet(err))
+        self.assertIn("fix it or move it aside before collecting", err)
+        self.assertFalse((self.ws / "round-02.md").exists())
 
 
 class ErrorTests(CliBase):
@@ -184,6 +276,29 @@ class ErrorTests(CliBase):
         self.assertIn("me.json", err)
         self.assertNotIn("Traceback", err)
 
+    def test_unexpected_failure_is_short_and_debug_reraises(self):
+        boom = RuntimeError("secret-looking text figd_abc123")
+        with mock.patch.object(cli, "_make_api", side_effect=boom):
+            code, out, err = self.run_cli("status", KEY)
+            self.assertEqual((code, out), (1, ""))
+            self.assertEqual(
+                err.strip(),
+                "error: unexpected failure (RuntimeError); run with FIGMA_COMMENTS_DEBUG=1 for a traceback",
+            )
+            self.assertNotIn("figd_", err)
+            with self.assertRaises(RuntimeError):
+                self.run_cli("status", KEY, env={"FIGMA_COMMENTS_DEBUG": "1"})
+
+    def test_long_argument_without_slash_is_not_echoed(self):
+        secret = "figd_" + "x" * 60
+        code, _, err = self.run_cli("status", secret)
+        self.assertEqual(code, 1)
+        self.assertIn("figd_x", err)
+        self.assertNotIn(secret, err)
+        self.assertNotIn("x" * 20, err)
+        code, _, err = self.run_cli("status", "https://example.com/" + "y" * 60)
+        self.assertIn("y" * 60, err)  # URL-like text is shown in full
+
     def test_corrupt_participants_is_exit_1(self):
         put_participants(self.cwd)
         (self.ws / "participants.json").write_text("{", encoding="utf-8")
@@ -203,7 +318,7 @@ class CompactOutputTests(CliBase):
         self.replay = make_replay(self.tmp, comments_list=all_new(600), nodes=big_nodes(600), name="r600")
         put_participants(self.cwd)
         code, out, err = self.run_cli("collect", KEY)
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, quiet(err)), (0, ""))
         self.assertLessEqual(len(out.splitlines()), 40)
         _, blocks = parse_round((self.ws / "round-01.md").read_text(encoding="utf-8"))
         self.assertEqual(len(blocks), 600)

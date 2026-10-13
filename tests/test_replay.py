@@ -96,11 +96,20 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(messages, ["one", "three"])
         self.assertEqual(len(self.writes()), 3)
 
+    def test_lost_response_applies_the_write(self):
+        with self.assertRaises(FigmaHTTPError) as cm:
+            self.api(fail="1:lost").reply(KEY, "4200109", "posted but unanswered")
+        self.assertEqual(cm.exception.status, 504)
+        self.assertEqual([c["message"] for c in self.live() if c["id"] == "9100001"], ["posted but unanswered"])
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(self.api(fail="1:lost").reply(KEY, "4200109", "next")["id"], "9100002")
+
     def test_fail_spec(self):
-        self.assertEqual(parse_fail_spec("3:429"), (3, 429))
+        self.assertEqual(parse_fail_spec("3:429"), (3, 429, False))
+        self.assertEqual(parse_fail_spec("2:lost"), (2, 504, True))
         self.assertIsNone(parse_fail_spec(""))
         self.assertIsNone(parse_fail_spec(None))
-        for bad in ("3", "x:500", "0:500", "1:42", "1:600", ":"):
+        for bad in ("3", "lost", "0:lost", "x:500", "0:500", "1:42", "1:600", ":"):
             with self.assertRaises(ValueError):
                 parse_fail_spec(bad)
 

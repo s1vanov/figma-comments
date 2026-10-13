@@ -20,5 +20,21 @@ class CommentLinkTests(unittest.TestCase):
         self.assertEqual(comment_link("K", None, "42"), "https://www.figma.com/design/K/#42")
 
 
+class ErrorTextTests(unittest.TestCase):
+    def test_long_argument_without_slash_is_cut(self):
+        with self.assertRaises(ValueError) as cm:
+            parse_file_ref("figd_" + "q" * 60)
+        self.assertIn("figd_q", str(cm.exception))
+        self.assertNotIn("q" * 10, str(cm.exception))
+
+    def test_short_or_url_like_argument_is_shown(self):
+        with self.assertRaises(ValueError) as cm:
+            parse_file_ref("hello")
+        self.assertIn("hello", str(cm.exception))
+        with self.assertRaises(ValueError) as cm:
+            parse_file_ref("https://example.com/" + "z" * 60)
+        self.assertIn("z" * 60, str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

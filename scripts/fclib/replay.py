@@ -16,7 +16,8 @@ can run the CLI several times against one directory:
   also an attempt that was made to fail;
 * fault injection: ``fail="<n>:<status>"`` (CLI: ``FIGMA_COMMENTS_REPLAY_FAIL``) makes
   the n-th write attempt (1-based, counted from ``writes.jsonl``) return that HTTP
-  status without applying it.
+  status without applying it; ``fail="<n>:lost"`` applies the n-th write to the live
+  file but answers 504, like a request that was posted while its response got lost.
 
 Nothing here knows about tokens: the CLI passes a dummy token when replay is on.
 The shapes below were checked against ``tests/fixtures/basic/shape-*.json`` (real
@@ -48,21 +49,29 @@ _REACTIONS_RE = re.compile(r"/v1/files/([^/]+)/comments/([^/]+)/reactions")
 _COMMENT_RE = re.compile(r"/v1/files/([^/]+)/comments/([^/]+)")
 
 
-def parse_fail_spec(spec: Optional[str]) -> Optional[Tuple[int, int]]:
-    """``"3:500"`` -> (3, 500). Empty or None -> None. Anything else -> ValueError."""
+LOST_STATUS = 504
+
+
+def parse_fail_spec(spec: Optional[str]) -> Optional[Tuple[int, int, bool]]:
+    """``"3:500"`` -> (3, 500, False); ``"3:lost"`` -> (3, 504, True): the write is applied.
+
+    Empty or None -> None. Anything else -> ValueError.
+    """
     if spec is None or not spec.strip():
         return None
     head, sep, tail = spec.strip().partition(":")
+    applied = tail.strip().lower() == "lost"
     try:
-        n, status = int(head), int(tail)
+        n = int(head)
+        status = LOST_STATUS if applied else int(tail)
     except ValueError:
         n, status = 0, 0
     if not sep or n < 1 or not 100 <= status <= 599:
         raise ValueError(
-            "FIGMA_COMMENTS_REPLAY_FAIL must look like '<n>:<status>' (n >= 1, HTTP status), got %r"
-            % spec
+            "FIGMA_COMMENTS_REPLAY_FAIL must look like '<n>:<status>' or '<n>:lost' "
+            "(n >= 1, HTTP status), got %r" % spec
         )
-    return n, status
+    return n, status, applied
 
 
 def _utc_now() -> datetime:
@@ -194,8 +203,14 @@ class ReplayTransport:
             parsed = None
         number = self._log_write(method, path, parsed)
         if self._fail is not None and number == self._fail[0]:
-            return _error(self._fail[1], "replay: injected failure of write #%d" % number)
+            _, status, applied = self._fail
+            if applied:
+                self._apply(method, path, parsed)  # the server did it; only the answer is lost
+                return _error(status, "replay: response lost for write #%d" % number)
+            return _error(status, "replay: injected failure of write #%d" % number)
+        return self._apply(method, path, parsed)
 
+    def _apply(self, method: str, path: str, parsed: Any) -> Response:
         if method == "POST":
             match = _REACTIONS_RE.fullmatch(path)
             if match:
