@@ -81,7 +81,7 @@ Action: `hold`; the designer or manager decides. Do not accept or refuse in the 
 
 Approval or thanks, no task: "OK", "Approved", "Looks great, thanks!"
 
-Action: `react` (✅, empty reply text). You only propose it: a bare "ok" can also mean "ok, but…", so the designer confirms.
+Action: `hold` until the designer agrees it is a confirmation, then `react` (✅, empty reply text). A bare "ok" can also mean "ok, but…", so you only propose it.
 
 | Bad | Good |
 |---|---|

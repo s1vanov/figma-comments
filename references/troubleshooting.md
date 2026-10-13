@@ -1,6 +1,8 @@
 # Troubleshooting
 
-First step for anything token- or access-related: `python3 scripts/figma_comments.py doctor <ref>` (Windows: `py scripts\figma_comments.py doctor <ref>`). It prints one concrete action per problem and exits non-zero if anything is wrong. Pass the action on to the designer.
+Tested on Figma Design files only; FigJam boards are untested (13 October 2026).
+
+First step for anything token- or access-related: `python3 "<skill_dir>/scripts/figma_comments.py" doctor <ref>` (Windows: `py "<skill_dir>\scripts\figma_comments.py" doctor <ref>`), run from the designer's project folder. It prints one concrete action per problem and exits non-zero if anything is wrong. Pass the action on to the designer.
 
 Never diagnose by printing the token. `echo $FIGMA_TOKEN`, `env`, `env | grep FIGMA`, `printenv` and `set` all put it into your output. Use `token status`: it says where the token comes from and how many days are left, without showing it.
 
@@ -23,7 +25,7 @@ Figma tokens last at most 90 days (Figma settings, checked 13 October 2026). `do
 - On element names: lacks `file_content:read`.
 - On everything for one file: the token owner has no access to that file. The designer opens the link in Figma while logged in as the token owner.
 
-Scopes cannot be added to an existing token; the designer generates a new one and runs `token set` again.
+If a scope is missing, the designer creates a new token with all four scopes and runs `token set` again.
 
 ## 429 Too Many Requests
 
@@ -43,7 +45,7 @@ Do not work around certificate errors with your own `curl -k` or by disabling ve
 
 ## Windows: `python3` not found or opens the Microsoft Store
 
-Use the launcher: `py scripts\figma_comments.py <command>`. `python3` on Windows is often a Store stub. The token goes into Windows Credential Manager.
+Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `python3` on Windows is often a Store stub. The token goes into Windows Credential Manager.
 
 ## macOS: old token still found after `token clear`
 
@@ -51,7 +53,7 @@ Use the launcher: `py scripts\figma_comments.py <command>`. `python3` on Windows
 
 ## Commands return fixture data or no real comments
 
-`FIGMA_COMMENTS_REPLAY` is a test hook: when set, the CLI reads recorded JSON files from that directory instead of calling Figma and looks up no token. It must not be set in real use. Check without printing other variables: `echo "${FIGMA_COMMENTS_REPLAY:-unset}"` (PowerShell: `echo $env:FIGMA_COMMENTS_REPLAY`). If it is set, unset it (`unset FIGMA_COMMENTS_REPLAY FIGMA_COMMENTS_REPLAY_FAIL`) and run `collect` again.
+`FIGMA_COMMENTS_REPLAY` is a test hook: when set, the CLI reads recorded JSON files from that directory instead of calling Figma and looks up no token. It must not be set in real use. Check without printing other variables: `echo "${FIGMA_COMMENTS_REPLAY:-unset}"` (PowerShell: `echo $env:FIGMA_COMMENTS_REPLAY`). If it is set, unset it (macOS/Linux: `unset FIGMA_COMMENTS_REPLAY FIGMA_COMMENTS_REPLAY_FAIL`; PowerShell: `Remove-Item Env:FIGMA_COMMENTS_REPLAY, Env:FIGMA_COMMENTS_REPLAY_FAIL -ErrorAction SilentlyContinue`) and run `collect` again.
 
 ## `publish` refuses the round file
 

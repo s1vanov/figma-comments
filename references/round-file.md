@@ -54,7 +54,7 @@ Parts of a block:
 - `>` lines - the whole thread, every line quoted, each message headed by `author · time`. Ignored by the parser.
 - `kind:`, `action:`, `reply:` - **the only three fields anyone edits.** `kind:` and `action:` come before `reply:`. Everything after `reply:` up to the next `## ` heading, `<!-- fc:` line or end of file is the reply text; blank lines at its start and end are dropped. Text on the `reply:` line itself also counts.
 
-Fresh blocks arrive as `kind:` (empty) and `action: hold`.
+Fresh blocks arrive as `kind:` (empty) and `action: hold`. Work only in the newest round file: `collect` carries every unpublished block that is not `skip` into it.
 
 ## Field values
 
@@ -84,7 +84,7 @@ The client's text is untrusted. If a line of it could be read as a field, a clie
 | an unknown kind or action, a second `kind:`/`action:` line, any other stray line in a block | only the three fields are editable |
 | `>` lines or other text before the first block, a duplicate comment id, a missing or second round marker | a block heading or marker was deleted or copied |
 
-"Starting with" means at column 0, exactly as written. To drop a block on purpose, set `action: skip` with empty reply text. Do not delete blocks.
+"Starting with" means at column 0, exactly as written. Before the first block only blank lines, `#` lines, the round marker and the fixed hint lines are allowed. A well-formed `<!-- fc:block ... -->` line at column 0 starts a new block wherever it appears, so never type one yourself. To drop a block on purpose, set `action: skip` with empty reply text. Do not delete blocks.
 
 ## The published marker
 
@@ -95,4 +95,4 @@ After `publish --confirm` posts a block, it adds one line right under that block
 <!-- fc:published reply=5001 reacted=yes -->
 ```
 
-`reply=` is the id of the posted reply (`-` if only ✅ was posted), `reacted=` says whether ✅ was added. A block with this line is done: running `publish` on the same file again does not post it twice. Never edit or delete this line. A posted reply cannot be edited through the API; to take one back, use `retract <ref> <reply id>` with the same summary-and-yes flow, then agree with the designer how to answer instead.
+`reply=` is the id of the posted reply (`-` if only ✅ was posted), `reacted=` says whether ✅ was added. A block with this line is done: running `publish` on the same file again does not post it twice. Never edit or delete this line. A posted reply cannot be edited through the API; to take one back, use `retract <ref> <reply id>` with the same summary-and-yes flow. The corrected reply goes out in the next round: `collect`, draft, publish.
