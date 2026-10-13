@@ -19,6 +19,7 @@ import argparse
 import getpass
 import os
 import sys
+import warnings
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -34,6 +35,7 @@ from .collect import (
     workspace_path,
 )
 from .doctor import expiry_notice, run_doctor
+from .lock import Terminated
 from .http import (
     Client,
     CurlTransport,
@@ -92,7 +94,7 @@ def _cut(lines: List[str], show_all: bool, hint: str = "") -> List[str]:
     if show_all or len(lines) <= LIST_LIMIT:
         return list(lines)
     rest = len(lines) - LIST_LIMIT
-    return lines[:LIST_LIMIT] + ["…and %d more%s" % (rest, " (%s)" % hint if hint else "")]
+    return lines[:LIST_LIMIT] + ["\u2026and %d more%s" % (rest, " (%s)" % hint if hint else "")]
 
 
 def _rel(path: Path) -> str:
@@ -112,7 +114,7 @@ HANDLE_LIMIT = 40
 
 def _capped(value: Any, limit: int = HANDLE_LIMIT) -> str:
     text = _clean(value)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
 
 
 def _unknown_lines(unknown: List[AuthorSummary], show_all: bool, hint: str) -> List[str]:
@@ -299,18 +301,18 @@ def _snippet(text: str, limit: int = SNIPPET_LEN) -> str:
             out.append("\\u%04x" % ord(ch))
         else:
             out.append(ch)
-    return '"%s"%s' % ("".join(out), "…" if len(text) > limit else "")
+    return '"%s"%s' % ("".join(out), "\u2026" if len(text) > limit else "")
 
 
 def _entry_line(entry: Entry, number: Optional[int] = None) -> List[str]:
-    head = "  %s%s · %s · %s" % (
+    head = "  %s%s \u00b7 %s \u00b7 %s" % (
         "%d. " % number if number is not None else "",
         _capped(entry.author), _clean(entry.root_id), _ACTION_LABEL[entry.action],
     )
     if entry.comment_id:
         head += " %s" % _clean(entry.comment_id)
     if entry.text is not None and entry.reason is None:
-        head += " · " + _snippet(entry.text)
+        head += " \u00b7 " + _snippet(entry.text)
     lines = [head]
     if entry.text is not None and entry.reason is None and "<!--" in entry.text:
         lines.append('     warning: this reply contains "<!--"; Figma shows it as plain text, '
@@ -326,7 +328,7 @@ def _skip_lines(report: PublishReport) -> List[str]:
         reason = REASON_TEXT[entry.reason] if entry.reason else "?"
         if entry.with_reply:
             reason = "skipped with its reply (%s)" % reason
-        lines.append("  %s · %s · %s · %s" % (_capped(entry.author), _clean(entry.root_id), entry.action, reason))
+        lines.append("  %s \u00b7 %s \u00b7 %s \u00b7 %s" % (_capped(entry.author), _clean(entry.root_id), entry.action, reason))
     return lines
 
 
@@ -443,14 +445,27 @@ def _print_expiry_notice(info: Any) -> None:
 
 
 def _stdin_is_tty() -> bool:
+    stdin = sys.stdin
+    if stdin is None:  # pythonw, or a process started with stdin closed
+        return False
     try:
-        return bool(sys.stdin.isatty())
-    except (ValueError, OSError):
+        return bool(stdin.isatty())
+    except (AttributeError, ValueError, OSError):
         return False
 
 
+NO_ECHO_REFUSAL = "cannot read the token without echo; run this in a normal terminal"
+CANCELLED = "cancelled; nothing was stored"
+
+
 def _prompt_secret(prompt: str) -> str:
-    return getpass.getpass(prompt)  # hidden input; never echoed
+    """Hidden input. getpass falls back to ECHOING input with a GetPassWarning; that is refused."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return getpass.getpass(prompt)
+        except getpass.GetPassWarning:
+            raise ValueError(NO_ECHO_REFUSAL) from None
 
 
 def _prompt_line(prompt: str) -> str:
@@ -515,12 +530,16 @@ def cmd_token_set(args: argparse.Namespace) -> int:
                          "run this in your own terminal (a token piped or passed through an agent is refused)")
     today = _today()
     expires: Optional[date] = args.expires
-    if expires is None:
-        answer = _prompt_line("Token expiry date, YYYY-MM-DD (Enter if unknown): ").strip()
-        expires = _parse_iso_date(answer) if answer else None
-    if expires is not None and expires < today:
-        raise ValueError("that expiry date is in the past (%s); enter the date shown in Figma" % expires)
-    token = _prompt_secret("Figma personal access token (input is hidden): ").strip()
+    try:
+        if expires is None:
+            answer = _prompt_line("Token expiry date, YYYY-MM-DD (Enter if unknown): ").strip()
+            expires = _parse_iso_date(answer) if answer else None
+        if expires is not None and expires < today:
+            raise ValueError("that expiry date is in the past (%s); enter the date shown in Figma" % expires)
+        token = _prompt_secret("Figma personal access token (input is hidden): ").strip()
+    except (EOFError, KeyboardInterrupt):  # Ctrl-D / Ctrl-C at a prompt
+        sys.stderr.write("\n")
+        raise ValueError(CANCELLED) from None
     if not token:
         raise ValueError("no token entered; nothing was stored")
     backend = set_token(token, expires, allow_file=args.allow_file)
@@ -641,7 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--confirm", metavar="CODE", default=None, help="the code printed by the run without --confirm")
     p.set_defaults(func=cmd_retract)
 
-    p = sub.add_parser("doctor", help="check the token, its scopes and expiry, and (with a link) access to the file")
+    p = sub.add_parser("doctor", help="check the token, its expiry, three of its four scopes and (with a link) access to the file")
     p.add_argument("ref", nargs="?", default=None, help="Figma file URL or file key (optional)")
     p.set_defaults(func=cmd_doctor)
 
@@ -675,6 +694,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     func: Callable[[argparse.Namespace], int] = args.func
     try:
         return func(args)
+    except Terminated as exc:  # SIGTERM while the workspace lock was held
+        print("error: terminated by SIGTERM; the workspace lock was released. Run the command again: "
+              "what publish already posted is recorded and not posted twice", file=sys.stderr)
+        return exc.code if isinstance(exc.code, int) else 143
     except _EXPECTED_ERRORS as exc:
         print("error: %s" % _clean(exc), file=sys.stderr)
         return 1

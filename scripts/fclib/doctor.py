@@ -43,7 +43,7 @@ class Check:
 
 def _shown(value: Any) -> str:
     text = " ".join("".join(ch if ch.isprintable() else " " for ch in str(value)).split())
-    return text if len(text) <= _SHOWN_LIMIT else text[: _SHOWN_LIMIT - 1] + "…"
+    return text if len(text) <= _SHOWN_LIMIT else text[: _SHOWN_LIMIT - 1] + "\u2026"
 
 
 def _days(n: int) -> str:
@@ -56,8 +56,8 @@ def expiry_notice(info: TokenInfo, today: date) -> Optional[str]:
     if left is None or left > WARN_DAYS:
         return None
     when = info.expires.isoformat() if info.expires else ""
-    if left < 0:
-        return "error: Figma token expired on %s; %s" % (when, _NEW_TOKEN)
+    if left < 0:  # a warning: the command goes on (doctor reports expiry as a failed check)
+        return "warning: Figma token has expired (%s); requests will fail with 403; %s" % (when, _NEW_TOKEN)
     if left == 0:
         return "warning: Figma token expires today (%s)" % when
     return "warning: Figma token expires in %s (%s)" % (_days(left), when)

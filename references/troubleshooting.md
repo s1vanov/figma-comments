@@ -16,7 +16,7 @@ On Linux without a Secret Service (`secret-tool`), `token set` refuses unless th
 
 ## Token expired or about to expire
 
-Figma tokens last at most 90 days (Figma settings, checked 13 October 2026). `doctor` and every command warn when 14 days or fewer are left. Fix: the designer generates a new token with the same four scopes and runs `token set --expires <new date>`.
+Figma tokens last at most 90 days (Figma settings, checked 13 October 2026). `doctor` and every command warn when 14 days or fewer are left; once it has expired, commands still run with a warning (Figma answers 403) and `doctor` fails. Fix: the designer generates a new token with the same four scopes and runs `token set --expires <new date>`.
 
 ## 403 Forbidden
 
@@ -58,6 +58,10 @@ Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `pytho
 ## `publish` refuses the round file
 
 The message starts with `line N:`. See [round-file.md](round-file.md), "When publish refuses the file". Fix that line, then run `publish <round-file>` again for a new summary and code.
+
+## "another publish or retract seems to be running"
+
+`publish --confirm`, `retract --confirm` and `collect` take the lock `.figma-comments/<file_key>/.publish.lock`, so two runs never post or save state at the same time. The message names the lock file, the process id and the start time. Stop and ask the designer whether another run is going (another terminal, another agent). Never delete the lock file yourself: if it belongs to a run that is still posting, a second run can post the same reply twice. Only the designer removes it, once they are sure nothing is running.
 
 ## `collect` says a round file already exists
 

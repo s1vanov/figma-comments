@@ -10,7 +10,10 @@ import io
 import itertools
 import json
 import os
+import signal
+import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -697,6 +700,207 @@ class SummaryAndLockTests(PublishBase):
         self.publish_now(wrap=Probe)
         self.assertEqual(len(seen), 1)
         self.assertIn("pid %d" % os.getpid(), seen[0])
+
+
+# ---------------------------------------------------------------------------
+# hardening: duplicate risks, the lock under SIGTERM and collect, old plans
+# ---------------------------------------------------------------------------
+
+class FailingGets:
+    """Every GET comments answers 500 (a dry run that ends in an error)."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def request(self, method, url, headers, body):
+        if method == "GET" and "/comments" in url:
+            return Response(500, {}, b'{"status": 500, "err": "boom"}')
+        return self.inner.request(method, url, headers, body)
+
+
+class HardeningTests(PublishBase):
+    def plan_file(self, code):
+        return self.ws / ".plans" / ("%s.json" % code)
+
+    # -- 1: state.json fails alone after a successful write ------------------
+
+    def test_state_save_failure_still_writes_the_marker_and_stops(self):
+        self.edit(("4200109", "edit", "reply", "Скоротили."), ("4200115", "question", "reply", "Так."))
+        _, out, _ = self.run_cli("publish", self.rel_round())
+        with mock.patch("fclib.publish.save_state", side_effect=OSError("disk full")):
+            code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out))
+        self.assertEqual(code, 1)
+        self.assertIn("the reply went out (id 9100001) but state.json could not be saved: disk full. "
+                      "Run publish on this round file again before collecting.", err)
+        self.assertEqual(len(self.writes()), 1)  # stopped after the first write
+        self.assertEqual(self.blocks()["4200109"].published_reply, "9100001")  # the marker carries it
+        self.assertNotIn("4200109", load_state(self.ws).threads)
+        self.assertFalse((self.ws / ".publish.lock").exists())
+
+        api, _ = api_for(self.replay)
+        result = collect(api, FileRef(KEY, None), self.cwd, NOW + timedelta(hours=3))
+        meta, blocks = parse_round(result.round_path.read_text(encoding="utf-8"))
+        by = {b.root_id: b for b in blocks}
+        self.assertTrue("4200109" not in by or by["4200109"].reply == "", "round-02 offers the reply again")
+        self.assertEqual(load_state(self.ws).threads["4200109"].published_reply, "9100001")
+        self.assertNotIn(("4200109", "reply"),
+                         [(i.root_id, i.action) for i in build_plan(blocks, load_state(self.ws), meta)])
+
+    def test_state_and_marker_both_failing_still_names_the_posted_reply(self):
+        self.edit(("4200109", "edit", "reply", "Скоротили."))
+        with mock.patch("fclib.publish.save_state", side_effect=OSError("disk full")), \
+                mock.patch("fclib.publish.mark_published", side_effect=ValueError("damaged")):
+            report = self.publish_now()
+        self.assertIn("the reply went out (id 9100001) but state.json could not be saved: disk full", report.error)
+        self.assertIn("damaged", report.error)
+        self.assertEqual(len(self.writes()), 1)
+
+    # -- 2: a dry run that plans nothing drops the saved summary -------------
+
+    def test_dry_run_with_nothing_to_publish_deletes_the_saved_summary(self):
+        self.edit(("4200116", "unclear", "reply", "Що саме?"))
+        _, out, _ = self.run_cli("publish", self.rel_round())
+        code_x = self.code_from(out)
+        self.assertTrue(self.plan_file(code_x).exists())
+
+        self.mutate_live(lambda cs: [c.update(resolved_at=AFTER) for c in cs if c["id"] == "4200116"])
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Nothing to publish.", out)
+        self.assertFalse(self.plan_file(code_x).exists())
+
+        self.mutate_live(lambda cs: [c.update(resolved_at=None) for c in cs if c["id"] == "4200116"])  # reopened
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", code_x)
+        self.assertEqual(code, 2)
+        self.assertIn("run publish without --confirm first", err)
+        self.assertEqual(self.writes(), [])
+
+    def test_dry_run_that_ends_in_an_error_deletes_the_saved_summary(self):
+        self.edit(("4200116", "unclear", "reply", "Що саме?"))
+        report = self.dry_run()
+        self.assertTrue(self.plan_file(report.code).exists())
+        failed = publish(self.api(wrap=FailingGets), self.round)
+        self.assertIsNotNone(failed.error)
+        self.assertFalse(self.plan_file(report.code).exists())
+
+    # -- 3: SIGTERM releases the lock ----------------------------------------
+
+    @unittest.skipUnless(hasattr(signal, "SIGTERM") and sys.platform != "win32", "POSIX signals only")
+    def test_sigterm_during_a_locked_publish_releases_the_lock_and_restores_the_handler(self):
+        self.edit(("4200116", "unclear", "reply", "Що саме?"))
+        received = []
+
+        def sentinel(signum, frame):
+            received.append(signum)
+
+        previous = signal.signal(signal.SIGTERM, sentinel)
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        seen_lock = []
+        ws = self.ws
+
+        class Killer:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def request(self, method, url, headers, body):
+                if method == "POST":
+                    seen_lock.append((ws / ".publish.lock").exists())
+                    os.kill(os.getpid(), signal.SIGTERM)
+                return self.inner.request(method, url, headers, body)
+
+        with self.assertRaises(SystemExit) as ctx:
+            self.publish_now(wrap=Killer)
+        self.assertEqual(ctx.exception.code, 128 + int(signal.SIGTERM))
+        self.assertEqual(seen_lock, [True])
+        self.assertFalse((self.ws / ".publish.lock").exists())
+        self.assertIs(signal.getsignal(signal.SIGTERM), sentinel)
+        self.assertEqual(received, [])  # the run's own handler got it, not the previous one
+        self.assertEqual(self.writes(), [])
+
+    def test_terminated_run_exits_143_with_a_message(self):
+        from fclib.lock import Terminated
+        with mock.patch.object(cli, "publish", side_effect=Terminated(143)):
+            code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 143)
+        self.assertIn("terminated", err)
+        self.assertIn("lock was released", err)
+
+    # -- 4: collect takes the same lock --------------------------------------
+
+    def test_collect_refuses_while_the_lock_is_held(self):
+        lock = self.ws / ".publish.lock"
+        lock.write_text("pid 4242\nsince 2026-10-13T10:05:00Z\n", encoding="utf-8")
+        code, out, err = self.run_cli("collect", KEY)
+        self.assertEqual(code, 1)
+        self.assertIn("another publish or retract seems to be running (lock ", err)
+        self.assertIn("pid 4242, since 2026-10-13T10:05:00Z", err)
+        self.assertFalse((self.ws / "round-02.md").exists())
+        self.assertEqual(len(load_state(self.ws).rounds), 1)
+        self.assertTrue(lock.exists())
+
+    def test_collect_holds_the_lock_while_reading_and_releases_it(self):
+        seen = []
+        ws = self.ws
+
+        class Probe:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def request(self, method, url, headers, body):
+                seen.append((ws / ".publish.lock").exists())
+                return self.inner.request(method, url, headers, body)
+
+        api = FigmaAPI(Client("replay-token", Probe(ReplayTransport(self.replay)), sleep=lambda s: None))
+        collect(api, FileRef(KEY, None), self.cwd, NOW + timedelta(hours=3))
+        self.assertTrue(seen and all(seen))
+        self.assertFalse((self.ws / ".publish.lock").exists())
+
+    def test_empty_lock_file_reports_unknown_not_question_marks(self):
+        (self.ws / ".publish.lock").write_text("", encoding="utf-8")
+        code, out, err = self.run_cli("collect", KEY)
+        self.assertEqual(code, 1)
+        self.assertIn("pid unknown, since unknown", err)
+        self.assertNotIn("pid ?", err)
+
+    def test_lock_content_is_complete_before_the_lock_appears(self):
+        self.edit(("4200116", "unclear", "reply", "Що саме?"))
+        self.dry_run()
+        seen = []
+        real_link = os.link
+
+        def spy(src, dst, *args, **kwargs):
+            if str(dst).endswith(".publish.lock"):
+                seen.append(Path(src).read_text(encoding="utf-8"))
+            return real_link(src, dst, *args, **kwargs)
+
+        with mock.patch("os.link", side_effect=spy):
+            publish(self.api(), self.round, confirm=confirm_code(self.round.read_bytes()))
+        self.assertEqual(len(seen), 1)
+        self.assertIn("pid %d\nsince " % os.getpid(), seen[0])
+        self.assertEqual(list(self.ws.glob("*.tmp")), [])
+        self.assertEqual([p.name for p in self.ws.iterdir() if "lock" in p.name], [])
+
+    # -- 5: old plan files are pruned ----------------------------------------
+
+    def test_successful_dry_run_deletes_plan_files_older_than_7_days(self):
+        plans = self.ws / ".plans"
+        plans.mkdir()
+        now = time.time()
+
+        def aged(name, days):
+            path = plans / name
+            path.write_text("{}", encoding="utf-8")
+            os.utime(str(path), (now - days * 86400, now - days * 86400))
+            return path
+
+        old = aged("aaaaaaaaaa.json", 8)
+        fresh = aged("bbbbbbbbbb.json", 6)
+        other = aged("notes.txt", 30)
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue(other.exists())
 
 
 # ---------------------------------------------------------------------------

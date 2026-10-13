@@ -429,7 +429,9 @@ class RoundFileCreationTests(CollectBase):
         real_link = os.link
 
         def racing_link(src, dst, *a, **k):
-            Path(dst).write_text("the other process won", encoding="utf-8")
+            # os.link is global: the workspace lock links too; only the round file races
+            if Path(dst).name.startswith("round-"):
+                Path(dst).write_text("the other process won", encoding="utf-8")
             return real_link(src, dst, *a, **k)
 
         with mock.patch("fclib.collect.os.link", racing_link):

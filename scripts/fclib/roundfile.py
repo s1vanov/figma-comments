@@ -23,12 +23,12 @@ designer's token then publishes. The rules that rule this out:
 
 Block syntax::
 
-    ## 3. Hero title · Olena (client) · new
+    ## 3. Hero title \u00b7 Olena (client) \u00b7 new
     <!-- fc:block root=1964419410 node=1:3 -->
     <!-- fc:published reply=5001 reacted=yes -->     (added by mark_published)
     Link: https://www.figma.com/design/KEY/?node-id=1-3#1964419410
 
-    > Olena · 2026-10-13 16:53
+    > Olena \u00b7 2026-10-13 16:53
     > make the title shorter
 
     kind: edit
@@ -231,7 +231,7 @@ def render_round(meta: RoundMeta, items: List[RoundItem]) -> str:
         raise ValueError("invalid collected_at in round meta")
 
     out: List[str] = [
-        "# Round %02d · collected %s" % (meta.n, meta.collected_at),
+        "# Round %02d \u00b7 collected %s" % (meta.n, meta.collected_at),
         "<!-- fc:round file=%s n=%d collected=%s -->" % (meta.file_key, meta.n, meta.collected_at),
         "",
         *_HINT_LINES,
@@ -259,7 +259,7 @@ def render_round(meta: RoundMeta, items: List[RoundItem]) -> str:
 
         title = _inline(it.node_name or "") or _DELETED_TITLE
         out.append(
-            "## %d. %s · %s (%s) · %s"
+            "## %d. %s \u00b7 %s (%s) \u00b7 %s"
             % (index, title, _inline(it.author), _inline(it.side_label), _inline(it.group_label))
         )
         out.append("<!-- fc:block root=%s node=%s -->" % (it.root_id, node_id))
@@ -270,7 +270,7 @@ def render_round(meta: RoundMeta, items: List[RoundItem]) -> str:
         for mi, (m_author, m_time, m_text) in enumerate(it.messages):
             if mi:
                 out.append(">")
-            out.append("> %s · %s" % (_inline(m_author), _inline(m_time)))
+            out.append("> %s \u00b7 %s" % (_inline(m_author), _inline(m_time)))
             out.extend(_quote(m_text))
         out.append("")
         out.append("kind: " + it.kind if it.kind else "kind:")
@@ -342,7 +342,7 @@ def _finish(cur: _Cur) -> Block:
 
 def parse_round(text: str) -> Tuple[RoundMeta, List[Block]]:
     """Parse a round file. Raises ``RoundParseError`` (never skips a damaged block)."""
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         text = text[1:]
     lines = text.splitlines()  # also swallows CRLF; same line-break set the renderer quotes against
     meta: Optional[RoundMeta] = None

@@ -1,7 +1,10 @@
 """`collect`: read the file's comments, classify the threads, write the next round file.
 
 Reads from Figma only. Writes `round-NN.md` and appends the round to `state.json`
-inside the workspace; it never writes to Figma (spec section 6).
+inside the workspace; it never writes to Figma (spec section 6). It holds the workspace
+lock (lock.py) for the whole run, so it never overlaps a publish or retract, which also
+save state.json; a held lock refuses the collect. The very first collect, before the
+workspace exists, has nothing to lock against (no publish can run without a round file).
 
 Which threads become blocks (spec 4.2 and 5.3):
 
@@ -31,6 +34,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .api import FigmaAPI
+from .lock import workspace_lock
 from .model import (
     AuthorSummary,
     Group,
@@ -299,6 +303,15 @@ def _write_new_file(path: Path, text: str) -> None:
 
 
 def collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectResult:
+    """Write the next round file. Raises LockBusy (a ValueError) while another run holds the lock."""
+    ws = workspace_path(root, ref.file_key)
+    if ws.is_dir():
+        with workspace_lock(ws):
+            return _collect(api, ref, root, now)
+    return _collect(api, ref, root, now)
+
+
+def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectResult:
     key = ref.file_key
     ws = workspace_path(root, key)
     state = load_state(ws)  # a missing workspace gives an empty State; corrupt state stops here

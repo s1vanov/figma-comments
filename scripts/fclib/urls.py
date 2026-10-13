@@ -21,7 +21,7 @@ def _shown(ref: str) -> str:
     """How an unusable argument is echoed in an error: a long argument without "/" may be a
     pasted secret, so only its first 6 characters are shown."""
     if len(ref) > 40 and "/" not in ref:
-        return repr(ref[:6] + "…")
+        return repr(ref[:6] + "\u2026")
     return repr(ref)
 
 

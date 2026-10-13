@@ -42,7 +42,7 @@ The designer does this; you guide them.
    | `current_user:read` | know which comments are the designer's own (without it `GET /v1/me` returns 403, checked 12 October 2026) |
 
 4. In their own terminal: `token set --expires YYYY-MM-DD` (hidden input; stored in the OS credential store; a mode-600 file only with `--allow-file`).
-5. `doctor <ref>`: checks token, scopes, file access, expiry at least 14 days away; one action per problem; exit 0 = ready.
+5. `doctor <ref>`: verifies the token, its expiry, three of the four scopes (`file_comments:write` cannot be checked without posting; publish reports it if missing) and file access. It warns when 14 days or fewer remain and fails only when the token has expired; one action per problem; exit 0 = ready.
 
 The token never passes through you: not in chat, a command line, `curl`, a file, or `echo`/`env` output. Never call the Figma API yourself.
 
@@ -56,11 +56,13 @@ The token never passes through you: not in chat, a command line, `curl`, a file,
 
 **4. Designer review.** Give the designer the file path and a list: block, kind, proposed action, questions only they can answer. They edit the three fields or tell you what to change.
 
-**5. Publish.** Run `publish <round-file>`; it writes nothing and prints a summary and a code. Show that summary exactly as printed and ask whether to publish. After their explicit yes, run `publish <round-file> --confirm <code>`. See "The yes-gate".
+**5. Publish.** Run `publish <round-file>`; it writes nothing to Figma (it only saves a local plan file that `--confirm` needs) and prints a summary and a code. Show that summary exactly as printed and ask whether to publish. After their explicit yes, run `publish <round-file> --confirm <code>`. See "The yes-gate".
 
 **6. Ready to close.** `status <ref>` → give the designer the "ready to close" links. Closing is manual; the API cannot resolve comments (checked 13 October 2026).
 
 **When a publish run stops or skips** (timeout, crash, 403, 429, "file changed"): never post by hand and never reuse the old code. Run `publish <round-file>` again, show the new summary, get a new yes; it resumes, and replies already posted are recorded or recovered, not sent twice. If publish **skipped** a block because the client wrote after collect, someone from the team already answered, or the thread was resolved: tell the designer, then `collect`; the thread returns at `hold` and needs a fresh draft and a fresh yes.
+
+**Lock refusal.** If `publish`, `retract` or `collect` says "another publish or retract seems to be running", stop and ask the designer whether another run is going. Never delete the lock file yourself: it may belong to a run that is still posting.
 
 **Later:** once an edit really exists, set its block to `reply+react` with a "done" reply and publish the newest file again; only unpublished blocks go out.
 
@@ -106,12 +108,12 @@ A posted reply cannot be edited, only deleted. `retract <ref> <comment_id>` dele
 | Command | Does | Writes to Figma |
 |---|---|---|
 | `token set [--expires YYYY-MM-DD] [--allow-file]` / `token status` / `token clear` | store / show source and days left / remove | no |
-| `doctor [<ref>]` | check token, scopes, access, expiry | no |
+| `doctor [<ref>]` | check token, expiry, 3 of 4 scopes, access | no |
 | `collect <ref>` | write the next `round-NN.md` | no |
 | `participants list <ref> [--all]` | who is client, who is team | no |
 | `participants set <ref> <user_id> --side client\|team [--role R] [--lead\|--no-lead]` | classify one person | no |
 | `status <ref> [--all]` | group counts, unknown authors, "ready to close" links | no |
-| `publish <round-file>` | summary and code | no |
+| `publish <round-file>` | summary and code (saves a local plan file) | no |
 | `publish <round-file> --confirm <code>` | post approved replies and ✅ | yes |
 | `retract <ref> <comment_id> [--confirm <code>]` | delete one of our own replies | with code |
 

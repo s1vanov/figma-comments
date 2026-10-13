@@ -9,15 +9,19 @@ A posted reply cannot be edited, so everything here refuses by default (spec 4.2
   from the current bytes (mismatch: ``CodeMismatch``, no request), needs that saved
   summary, and makes only the writes it lists; a write that would be planned now but was
   not listed (a thread reopened since the summary) is skipped as NOT_IN_SUMMARY;
-* one writer at a time per workspace: ``<ws>/.publish.lock`` is created exclusively (pid and
-  UTC time inside) for a confirmed publish or retract and removed when it ends. An existing
-  lock refuses the run (``LockBusy``) and is never removed automatically;
+* one writer at a time per workspace: ``<ws>/.publish.lock`` (lock.py) is taken for a
+  confirmed publish or retract, and by collect, and removed when it ends (SIGTERM included).
+  An existing lock refuses the run (``LockBusy``) and is never removed automatically;
+* a dry run that plans nothing, or ends in an error, deletes the saved summary for its code
+  (a confirm must never act on a summary the designer did not see last); a successful dry
+  run also deletes saved summaries older than 7 days;
 * before EVERY write the comments are read again and the thread is checked (``preflight``):
   a reply never goes into a resolved thread, nor into a thread where someone wrote after
   the round was collected;
 * after every successful write ``state.json`` is saved first, then the round file gets its
   ``fc:published`` marker (atomic replace), so a crash or a failed marker never loses the
-  record of a write that happened (collect and publish both honour the state record). If
+  record of a write that happened (collect and publish both honour the state record). When
+  state.json cannot be saved the marker is still attempted, then the run stops. If
   the designer edited the file during the run, the marker goes into the edited text when it
   still parses, and the run stops. A write whose answer was lost (it went through, the
   response did not arrive) is found on the next run and recorded instead of being posted
@@ -44,15 +48,16 @@ import os
 import re
 import stat
 import tempfile
-from contextlib import contextmanager
+import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .api import REACTION_EMOJI, FigmaAPI
 from .http import FigmaHTTPError, TransportError
+from .lock import LOCK_NAME, LockBusy, workspace_lock  # noqa: F401  (LOCK_NAME, LockBusy: re-exported)
 from .model import Participant, Thread, build_threads, parse_ts
 from .participants import load_participants
 from .roundfile import Block, RoundMeta, mark_published, parse_round
@@ -62,8 +67,8 @@ from .urls import comment_link
 
 CODE_LEN = 10
 PARTICIPANTS_FILE = "participants.json"
-LOCK_NAME = ".publish.lock"
 PLANS_DIR = ".plans"
+PLAN_MAX_AGE = 7 * 24 * 3600  # seconds; older saved summaries are deleted by a dry run
 _ID_CHARS = frozenset("0123456789")
 _CODE_RE = re.compile(r"[0-9a-f]{%d}" % CODE_LEN)
 
@@ -87,10 +92,6 @@ REASON_TEXT = {
 
 class CodeMismatch(Exception):
     """The confirm code (or its saved summary) does not match what is there now. Nothing was written."""
-
-
-class LockBusy(ValueError):
-    """Another publish or retract holds the workspace lock. Nothing was written."""
 
 
 class _Stop(Exception):
@@ -174,41 +175,6 @@ def stop_message(exc: BaseException, command: str) -> str:
     return "%s; stopped, nothing is retried automatically" % exc
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-@contextmanager
-def workspace_lock(ws: Path) -> Iterator[Path]:
-    """Hold ``<ws>/.publish.lock`` (O_CREAT|O_EXCL) for one writing run; never break someone else's."""
-    path = Path(ws) / LOCK_NAME
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        pid, since = "?", "?"
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-            m = re.search(r"pid (\S+)", content)
-            pid = m.group(1) if m else pid
-            m = re.search(r"since (\S+)", content)
-            since = m.group(1) if m else since
-        except OSError:
-            pass
-        raise LockBusy(
-            "another publish or retract seems to be running (lock %s, pid %s, since %s); "
-            "if none is running, delete the lock file and retry" % (path, pid, since)
-        ) from None
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("pid %d\nsince %s\n" % (os.getpid(), _utc_now()))
-        yield path
-    finally:
-        try:
-            os.unlink(str(path))
-        except OSError:
-            pass
-
-
 def _item_key(root: str, action: str, text: Optional[str]) -> Tuple[str, str, str]:
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest() if action == "reply" and text is not None else "react"
     return root, action, digest
@@ -224,6 +190,28 @@ def _save_summary(ws: Path, report: PublishReport) -> None:
     folder = Path(ws) / PLANS_DIR
     folder.mkdir(exist_ok=True)
     _atomic_write(_plan_path(ws, report.code), (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+
+
+def _discard_summary(ws: Path, code: str) -> None:
+    try:
+        _plan_path(ws, code).unlink()
+    except OSError:
+        pass
+
+
+def _prune_summaries(ws: Path, now: Optional[float] = None) -> None:
+    """Delete saved summaries (``.plans/*.json``) older than PLAN_MAX_AGE; best effort."""
+    limit = (time.time() if now is None else now) - PLAN_MAX_AGE
+    try:
+        paths = list((Path(ws) / PLANS_DIR).glob("*.json"))
+    except OSError:
+        return
+    for path in paths:
+        try:
+            if path.stat().st_mtime < limit:
+                path.unlink()
+        except OSError:
+            pass
 
 
 def _load_summary(ws: Path, code: str) -> Set[Tuple[str, str, str]]:
@@ -431,13 +419,25 @@ class _Run:
             self.status[root] = [reply_id, reacted]
 
     def record(self, root: str, reply_id: Optional[str] = None, reacted: Optional[bool] = None) -> None:
-        """Called right after a write: state.json first (the record must survive), then the marker."""
+        """Called right after a write: state.json first (the record must survive), then the marker.
+
+        If state.json cannot be saved the marker is still attempted (it alone keeps collect
+        from offering the reply again), and then the run stops.
+        """
         current = self.status[root]
         if reply_id is not None:
             current[0] = reply_id
         if reacted is not None:
             current[1] = reacted
-        self._save_state(self.blocks[root], current[0], current[1])
+        state_error: Optional[str] = None
+        try:
+            self._save_state(self.blocks[root], current[0], current[1])
+        except Exception as exc:  # any failure: the write happened, the marker must still be tried
+            state_error = str(exc) or type(exc).__name__
+        what = ("the reply went out (id %s)" % reply_id if reply_id is not None
+                else "the reaction on %s went out" % root)
+        state_stop = ("%s but state.json could not be saved: %s. "
+                      "Run publish on this round file again before collecting." % (what, state_error))
 
         edited = False
         try:
@@ -452,11 +452,16 @@ class _Run:
             _atomic_write(self.path, new_raw)
             self.raw, self.text = new_raw, new_text
         except (OSError, ValueError) as exc:  # UnicodeDecodeError is a ValueError
+            if state_error is not None:
+                raise _Stop("%s Its marker could not be written into %s either (%s); publish finds it "
+                            "in Figma and records it." % (state_stop, self.path.name, exc)) from None
             raise _Stop(
                 "the reply/reaction for %s went out and state.json has the record, but its marker could "
                 "not be written into %s (%s). Stopped; run publish again to continue"
                 % (root, self.path.name, exc)
             ) from None
+        if state_error is not None:
+            raise _Stop(state_stop)
         if edited:
             raise _Stop(
                 "%s was edited during publish; the marker for %s was added to the edited file and "
@@ -522,17 +527,22 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
     allowed = _load_summary(ws, code) if confirm is not None else None
 
     if confirm is None:
-        report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, code, None)
+        try:
+            report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, code, None)
+        except BaseException:
+            _discard_summary(ws, code)
+            raise
         if report.error is None and (report.planned or report.recovered):
             _save_summary(ws, report)
+        else:
+            _discard_summary(ws, code)  # nothing (or an error) shown: no summary to confirm
+        if report.error is None:
+            _prune_summaries(ws)
         return report
     with workspace_lock(ws):
         report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, code, allowed)
     if report.error is None:
-        try:
-            _plan_path(ws, code).unlink()
-        except OSError:
-            pass
+        _discard_summary(ws, code)
     return report
 
 

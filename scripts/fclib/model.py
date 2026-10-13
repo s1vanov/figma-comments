@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional
 CHECK_EMOJI = ":white_check_mark:"
 
 _FRACTION_RE = re.compile(r"\.(\d+)")
-_NEWLINES_RE = re.compile(r"[\r\n  ]+")
+_NEWLINES_RE = re.compile(r"[\r\n\u2028\u2029]+")
 SAMPLE_LEN = 80
 
 

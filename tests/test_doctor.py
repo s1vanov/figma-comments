@@ -1,8 +1,11 @@
 """doctor, token set|status|clear and the token-expiry warning (no network, no real Keychain)."""
 import contextlib
+import getpass
 import io
 import os
+import sys
 import unittest
+import warnings
 from datetime import date
 from unittest import mock
 
@@ -262,9 +265,10 @@ class ExpiryNotice(unittest.TestCase):
         self.assertEqual(expiry_notice(info(0), TODAY),
                          "warning: Figma token expires today (2026-10-13)")
 
-    def test_expired_is_error_level(self):
+    def test_expired_is_a_warning_because_the_command_continues(self):
         text = expiry_notice(info(-2), TODAY)
-        self.assertTrue(text.startswith("error: Figma token expired on 2026-10-11"))
+        self.assertTrue(text.startswith(
+            "warning: Figma token has expired (2026-10-11); requests will fail with 403"), text)
         self.assertIn("token set", text)
 
     def test_never_contains_the_token(self):
@@ -352,9 +356,11 @@ class ExpiryWarningInCommands(unittest.TestCase):
         self.assertEqual(self.make(info(40))[1], "")
         self.assertEqual(self.make(info(None))[1], "")
 
-    def test_expired_prints_error_text_and_carries_on(self):
+    def test_expired_prints_a_warning_and_carries_on(self):
         _, err = self.make(info(-1))
-        self.assertTrue(err.startswith("error: Figma token expired on 2026-10-12"))
+        self.assertTrue(err.startswith(
+            "warning: Figma token has expired (2026-10-12); requests will fail with 403"), err)
+        self.assertNotIn("error:", err)
 
     def test_the_token_is_never_printed(self):
         for d in (10, -1, 40):
@@ -469,6 +475,58 @@ class TokenSetCli(CliBase):
                                           replay=False, env={"FIGMA_TOKEN": "x"})
         self.assertIn("FIGMA_TOKEN", out)
         self.assertIn("precedence", out)
+
+
+class TokenSetPrompts(CliBase):
+    """Prompt failures: no echo possible, Ctrl-D / Ctrl-C, no stdin at all."""
+
+    def run_set(self, *patches):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(cli, "_stdin_is_tty", return_value=True))
+            stack.enter_context(mock.patch.object(cli, "_today", return_value=TODAY))
+            store = stack.enter_context(mock.patch.object(cli, "set_token", return_value="keychain"))
+            for patch in patches:
+                stack.enter_context(patch)
+            code, out, err = self.run_cli("token", "set", "--expires", "2026-12-31", replay=False)
+        return code, out, err, store
+
+    def test_getpass_warning_is_refused_not_echoed(self):
+        def echoing_getpass(prompt="Password: ", stream=None):
+            warnings.warn("Can not control echo on the terminal.", getpass.GetPassWarning, stacklevel=2)
+            return SECRET
+
+        code, out, err, store = self.run_set(mock.patch.object(cli.getpass, "getpass", side_effect=echoing_getpass))
+        self.assertEqual(code, 1)
+        self.assertIn("cannot read the token without echo; run this in a normal terminal", err)
+        store.assert_not_called()
+        self.assertNotIn(SECRET, out + err)
+
+    def test_ctrl_d_at_the_expiry_prompt_cancels(self):
+        with mock.patch.object(cli, "_stdin_is_tty", return_value=True), \
+                mock.patch.object(cli, "_today", return_value=TODAY), \
+                mock.patch.object(cli, "_prompt_line", side_effect=EOFError), \
+                mock.patch.object(cli, "set_token", return_value="keychain") as store:
+            code, out, err = self.run_cli("token", "set", replay=False)
+        self.assertEqual(code, 1)
+        self.assertIn("cancelled; nothing was stored", err)
+        self.assertNotIn("unexpected failure", err)
+        store.assert_not_called()
+
+    def test_ctrl_c_and_ctrl_d_at_the_token_prompt_cancel(self):
+        for exc in (KeyboardInterrupt, EOFError):
+            code, out, err, store = self.run_set(mock.patch.object(cli, "_prompt_secret", side_effect=exc))
+            self.assertEqual(code, 1, exc)
+            self.assertIn("cancelled; nothing was stored", err)
+            store.assert_not_called()
+
+    def test_no_stdin_counts_as_no_terminal(self):
+        with mock.patch.object(sys, "stdin", None):
+            self.assertFalse(cli._stdin_is_tty())
+            with mock.patch.object(cli, "set_token", return_value="keychain") as store:
+                code, out, err = self.run_cli("token", "set", "--expires", "2026-12-31", replay=False)
+        self.assertEqual(code, 1)
+        self.assertIn("run this in your own terminal", err)
+        store.assert_not_called()
 
 
 class TokenSetRealScript(unittest.TestCase):
