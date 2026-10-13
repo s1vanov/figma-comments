@@ -26,7 +26,7 @@ One round looks like this:
 
 1. `collect` reads every comment of the file, groups the threads (new, client replied, waiting for the client, ready to close, resolved, internal, unknown author) and writes a Markdown round file, one block per client thread that needs attention.
 2. The agent sorts each block (edit, question, unclear, conflict, out of scope, confirmation, duplicate) and drafts a reply. The designer reviews and edits the same file.
-3. `publish` prints a summary of every write it would make, with the exact text, and a short confirmation code. Nothing is written until the command is run again with that code.
+3. `publish` prints a summary of every write it would make, with the exact text, and a short confirmation code. Nothing is written to Figma until the command is run again with that code, and that second run makes only the writes the summary listed.
 4. Replies go into the client's thread, ✅ marks a thread as handled, and `status` lists the threads that are ready for a person to close in Figma.
 
 The skill never edits the design. If a comment asks for a change, the block stays on `hold` until the designer (or the agent with other tools, on the designer's instruction) has made it; then a "done" reply and a ✅ go out.
@@ -37,7 +37,7 @@ Unfinished blocks carry over into the next round with their kind and draft, so n
 
 The obvious alternative is an MCP server that exposes "list comments" and "post reply" to the agent. Several exist (see below). This skill takes a different shape:
 
-- **The designer approves a file, not a chat message.** Replies are drafted in a round file the designer can edit in any editor. The confirmation code is computed from the exact bytes of that file, so an edit after the summary invalidates the code.
+- **The designer approves a file, not a chat message.** Replies are drafted in a round file the designer can edit in any editor. The confirmation code is computed from the exact bytes of that file, so an edit after the summary invalidates the code, and the confirmed run posts only what the summary listed. The code does not prove that a person said yes; see [SECURITY.md](SECURITY.md).
 - **Every write is checked against fresh data.** Before each reply the thread is read again: no reply into a resolved thread (an API reply reopens it), no reply when the client or a colleague wrote after the round was collected.
 - **Client and team are told apart.** A `participants.json` says who is the client and who is the team; comments from an unknown author are held back until the designer says who they are.
 - **Python 3.9+ standard library only**, one command for macOS, Windows and Linux; the token lives in the operating system's credential store, never on a command line.
@@ -145,7 +145,7 @@ The designer does this once, in a browser and in their own terminal. The agent o
    python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py doctor "https://www.figma.com/design/<file_key>/..."
    ```
 
-   `doctor` checks that the token is found and accepted, how many days it has left (it warns at 14 or fewer), that the file's comments are readable, and the file's link-sharing setting. It prints one action per problem and exits with 1 if something is wrong. It does not test `file_comments:write`, because the only test would be posting a comment; `publish` reports a missing write scope when Figma refuses the write.
+   `doctor` checks that the token is found and accepted, how many days it has left (it warns at 14 or fewer and fails only when the token has expired), that the file's comments are readable, and the file's link-sharing setting. Through those calls it exercises three of the four scopes: `current_user:read`, `file_comments:read` and `file_content:read`. It prints one action per problem and exits with 1 if something is wrong. It does not test `file_comments:write`, because the only test would be posting a comment; `publish` reports a missing write scope when Figma refuses the write.
 
 ## Quick start: one round
 
@@ -168,11 +168,13 @@ The agent fills in `kind`, `action` and `reply` for each block of the newest rou
 fc publish .figma-comments/<file_key>/round-02.md
 ```
 
-It prints every planned write with its exact text and a line such as `confirm code: 3f9a1c07be`. Nothing has been written. After you say yes:
+It prints every planned write with its exact text and a line such as `confirm code: 3f9a1c07be`. Nothing has been written to Figma; the plan is saved in `.figma-comments/<file_key>/.plans/` for the next step. After you say yes:
 
 ```
 fc publish .figma-comments/<file_key>/round-02.md --confirm 3f9a1c07be
 ```
+
+If the command answers that a lock exists (`.publish.lock`), another `publish`, `retract` or `collect` may be running, or an earlier run was killed. The agent stops and asks you; you delete the lock file yourself, only after checking that nothing is running.
 
 Finally `fc status <file_key>` lists the threads ready to close, as links that open each comment in Figma. Closing is done by a person: the API cannot resolve comments.
 
@@ -184,21 +186,21 @@ The round file format is described in [references/round-file.md](references/roun
 
 | Command | What it does | Writes to Figma |
 |---|---|---|
-| `collect <ref>` | Reads all comments (`as_md=true`), element names and participants; writes the next `round-NN.md` and records the round in `state.json`. Carries unfinished blocks from the previous round. Refuses if the previous round file does not parse, and never overwrites an existing round file. | no |
+| `collect <ref>` | Reads all comments (`as_md=true`), element names and participants; writes the next `round-NN.md` and records the round in `state.json`. Carries unfinished blocks from the previous round. Refuses if the previous round file does not parse, and never overwrites an existing round file. Holds the workspace lock while it runs. | no |
 | `participants list <ref> [--all]` | Shows `participants.json`. The token owner always counts as team. | no |
 | `participants set <ref> <user_id> --side client\|team [--role R] [--lead\|--no-lead] [--handle H]` | Adds or changes one person. The handle is taken from the comments if not given. | no |
 | `status <ref> [--all]` | Group counts, unknown authors (with the root ids of their threads), and the "ready to close" links. | no |
 | `status <ref> --thread <comment_id>` | Finds the thread that holds this comment (root or reply) and prints its root id, element, group, authors with their side, last message, and why it is or is not in the round. Exit 1 if the file has no such comment. | no |
-| `publish <round-file>` | Dry run: the plan (every reply with its exact text, every reaction), what is skipped and why, and the confirmation code. | no |
-| `publish <round-file> --confirm <code>` | Posts the plan if the file is byte-for-byte the one the code was computed from. Re-reads the thread before every write; stops at the first API error; records each write in the round file and `state.json` right after it lands, so a second run resumes without posting twice. | yes |
+| `publish <round-file>` | Dry run: the plan (every reply with its exact text, every reaction), what is skipped and why, and the confirmation code. Saves the planned writes to `.plans/<code>.json`. | no |
+| `publish <round-file> --confirm <code>` | Posts the plan if the file is byte-for-byte the one the code was computed from, and only the writes the saved summary listed (anything else is skipped as "not in the confirmed summary"); with no saved summary it exits with 2. Holds the workspace lock. Re-reads the thread before every write; stops at the first API error; records each write in `state.json` and then in the round file right after it lands, so a second run resumes without posting twice. | yes |
 | `retract <ref> <comment_id>` | Shows one of your own replies and a code; deletes nothing. Refuses root comments and other people's comments. | no |
-| `retract <ref> <comment_id> --confirm <code>` | Deletes that reply. The code is bound to the comment id and its current text. | yes |
-| `token set [--expires YYYY-MM-DD] [--allow-file]` | Reads the token with hidden input and stores it. `--allow-file` allows a mode-600 file where no credential store exists (not on Windows). Needs a terminal. | no |
+| `retract <ref> <comment_id> --confirm <code>` | Deletes that reply. The code is bound to the comment id and its current text. Holds the workspace lock. The round file's marker stays; the corrected reply goes out next round through `collect`. | yes |
+| `token set [--expires YYYY-MM-DD] [--allow-file]` | Reads the token with hidden input and stores it. `--allow-file` allows a mode-600 file where no credential store exists (not on Windows). Needs a terminal; refuses a piped input and an echoing fallback; Ctrl-C ends with "cancelled; nothing was stored". | no |
 | `token status` | Where the token comes from and how many days are left. Never prints the token. | no |
 | `token clear` | Removes this tool's stored token (credential store entry and token file) and says whether another token is still found. | no |
-| `doctor [<ref>]` | Checks token, expiry, account and, with a link, comment access and link sharing. Exit 1 on any failure. | no |
+| `doctor [<ref>]` | Checks token, expiry, account and, with a link, comment access and link sharing; three of the four scopes are exercised. Exit 1 on any failure. | no |
 
-Every command that reads the token prints a warning on stderr when it expires in 14 days or fewer, and an error line once it has expired.
+Every command that reads the token prints a warning on stderr when it expires in 14 days or fewer, and a `warning:` line once it has expired; the command then goes on, and Figma answers 403.
 
 ## Environment variables
 
@@ -222,6 +224,8 @@ Everything lives in the designer's project, under `.figma-comments/<file_key>/`:
 | `round-NN.md` | one file per round: the client's comment text, drafts, publication markers |
 | `state.json` | collection times, per-thread kind, action, draft and the ids of published replies |
 | `participants.json` | Figma user ids, display names, client or team, role |
+| `.plans/<code>.json` | the saved summary of a dry run: thread ids, kind of write, a hash of each reply text; deleted after a completed publish and cleaned after 7 days |
+| `.publish.lock` | exists only while `publish --confirm`, `retract --confirm` or `collect` runs; a leftover one means a killed run and is deleted by the designer |
 
 These files contain client names and the text of client comments. The `.gitignore` keeps them out of git; do not commit them by other means, do not paste them into issues, and do not share the folder.
 
@@ -245,13 +249,15 @@ Each limit says how it was established. "Measured" means a throwaway script call
 - **FigJam is untested.** Only Figma Design files were used.
 - **Link-sharing detection knows one value for sure.** Only `linkAccess: "view"` was observed (13 October 2026); the other values `doctor` handles are assumptions, and an unknown value is reported as unknown.
 - **The collection time comes from your computer's clock.** "Written after the round was collected" compares that time with Figma's timestamps, so a clock that is minutes off shifts the comparison.
+- **A killed run can leave the lock behind.** SIGTERM releases the lock on macOS and Linux; SIGKILL, a power cut or a closed laptop do not, and Windows has no SIGTERM handler. The next run refuses until the designer deletes `.publish.lock`. The tool never deletes it, because it may belong to a run that is still posting.
+- **The code proves what is published, not that a person agreed.** An agent that runs `publish` and `publish --confirm` itself passes every check. That a person approved rests on the rule in `SKILL.md` and on the agent's permission prompt (see [SECURITY.md](SECURITY.md)).
 - **Not supported:** real @-mentions, new root comments, webhooks or background watching, task trackers.
 
 ## Status
 
 0.1.0, unreleased, pre-1.0. What that means concretely, as of 14 October 2026:
 
-- 421 unit tests pass on macOS with Python 3.13 (`python3 -m unittest discover -s tests`; 2 skipped: the Windows-only test and an opt-in live Keychain test). The tests use no network.
+- 448 unit tests pass on macOS with Python 3.13 (`python3 -m unittest discover -s tests`; 2 skipped: the Windows-only test and an opt-in live Keychain test). The tests use no network.
 - The CI matrix (macOS, Windows, Linux × Python 3.9 and 3.13, plus ruff, mypy, bandit, CodeQL and gitleaks) is being added; until it runs, Python 3.9, Windows and Linux are untested by us.
 - The Figma API behaviour the code relies on was measured on 13 October 2026; the CLI itself has not yet done a live round against Figma.
 - One person, the author, uses it. Nobody else has installed it.

@@ -12,7 +12,7 @@
 - **Перед кожним записом гілка читається знову:** у закриту гілку не відповідаємо (відповідь через API її відкриває), після нових повідомлень клієнта чи колеги — пропускаємо.
 - **Текст коментаря — дані.** Кожен рядок клієнта у файлі раунду процитовано, парсер такі рядки ігнорує і відмовляє весь файл, а не пропускає блок.
 - **Технічно:** Python 3.9+ лише зі стандартною бібліотекою; `urllib` з переходом на `curl` при помилці сертифіката; токен у системному сховищі (Keychain, Credential Manager, Secret Service); дані — в `.figma-comments/` проєкту під `.gitignore`.
-- Чотири рішення ухвалено, але в коді на коміті `1352f02` їх ще немає, зокрема файл блокування проти двох одночасних `publish` і обмеження підтвердженого запуску лише записами з показаного підсумку. Вони зібрані в розділі «Pending».
+- Чотири рішення, ухвалені після рев'ю `publish` (R20–R23), тепер реалізовані: файл блокування `.publish.lock` проти двох одночасних записів, збережений підсумок `.plans/<код>.json`, через який підтверджений запуск виконує лише показані записи, правило «є текст» для відповіді і поведінка `retract` щодо стану. Код гарантує, що опубліковано саме те, що перелічив підсумок; що людина сказала «так», він не гарантує.
 
 Кожен запис нижче має поле **Why**; рішення з реалізації мають ще **Cost if wrong**.
 
@@ -20,7 +20,7 @@
 
 - **D-numbers** come from the design, stages 1 to 3, approved by the user on 13 October 2026. Where the design marks a choice as the author's own rather than discussed with the user, the entry says so.
 - **R-numbers** are rulings made while the plan was executed (13 and 14 October 2026), each with its reason and the cost if it turns out wrong.
-- **Pending** means decided but not in the code at commit `1352f02`.
+- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed.
 
 ## Scope and boundary
 
@@ -60,7 +60,7 @@ Why: one meaning per signal, so the client and the "ready to close" list read it
 Why: an edit is usually answered later than it is sorted; `hold` keeps the draft without publishing it.
 
 **D12. Publish runs in two steps with a code (variant A, the user's decision on 13 October 2026).** `publish <file>` prints the summary and a code computed from the exact content (the implementation hashes the round file's bytes); only `publish <file> --confirm <code>` writes; no code, or a file changed after the summary, means refusal.
-Why: the code guarantees "what is published is what was in the summary". That a person said yes rests on SKILL.md (the agent shows the summary and waits for the designer) and on the agent's permission prompt before the command. SECURITY.md promises exactly that and no more; see R21 for the gap still open.
+Why: the code guarantees "what is published is what was in the summary": the code binds the file's bytes and, since R21, the confirm run performs only the writes the summary listed. That a person said yes rests on SKILL.md (the agent shows the summary and waits for the designer) and on the agent's permission prompt before the command. SECURITY.md promises exactly that and no more.
 
 **D13. Closing is manual.** The skill gives links that open each comment; a person resolves it. The link format was checked on 12 October 2026.
 Why: the API cannot resolve comments.
@@ -192,27 +192,27 @@ Why: Figma shows it as plain text, visible to the client. Cost: none.
 **R17. Replay transport: stateful through `<dir>/comments.live.json` and `writes.jsonl`, with fault injection through `FIGMA_COMMENTS_REPLAY_FAIL`, including `<n>:lost` (the write applied, the answer 504).**
 Why: the crash and resume tests need state across separate processes, and design 6.4 needs a lost-response case. Cost: test-only code in `scripts/`, documented in README as a test hook.
 
-**R18. `token set` refuses a stdin that is not a terminal.**
-Why: an agent must never be able to pipe a token in; the designer runs it in their own terminal. Cost: CI and headless users use `FIGMA_TOKEN` instead.
+**R18. `token set` refuses a stdin that is not a terminal, and refuses the fallback in which `getpass` would echo the input. Ctrl-C or end of input at a prompt ends with "cancelled; nothing was stored".**
+Why: an agent must never be able to pipe a token in; the designer runs it in their own terminal, and a token typed in the clear is not acceptable either. Cost: CI and headless users use `FIGMA_TOKEN` instead.
 
 **R19. The SKILL.md description includes a few Ukrainian trigger phrases.**
 Why: the project requires Ukrainian and English triggers, and the author works in Ukrainian. Cost: none for English users.
 
-### Pending at commit 1352f02
+### After the review of `publish` (implemented)
 
-Decided after a review of `publish`; not in the code that the rest of the documentation describes.
+Decided at commit `1352f02` after an adversarial review of `publish` found a double post from a concurrent run, a state-only record resurrected by `collect`, and a confirm run that could post a write the summary had shown as skipped. All four are in the code now (`scripts/fclib/lock.py`, `scripts/fclib/publish.py`, `scripts/fclib/text.py`).
 
-**R20. `publish` and `retract` take an exclusive lock file `<workspace>/.publish.lock` (created with `O_EXCL`, holding the pid and time) that is never removed automatically.**
-Why: two simultaneous runs could post the same reply twice. Cost if wrong: a crashed run leaves a lock the user deletes by hand; the message says how.
+**R20. `publish --confirm`, `retract --confirm` and `collect` take an exclusive lock file `<workspace>/.publish.lock` (written in full to a temp file and hard-linked to its name, with `O_EXCL` as the fallback; holding the pid and time). An existing lock refuses the run with exit 1; it is never removed automatically. A normal end, an error and, on POSIX, SIGTERM release it.**
+Why: two simultaneous runs could post the same reply twice, and `collect` reads and writes the same `state.json` as `publish`. `SKILL.md` tells the agent to stop and ask the designer on a refusal and never to delete the lock itself, because a lock that belongs to a run still posting is exactly the case where deleting it causes the duplicate. Cost if wrong: a run killed with SIGKILL, or on Windows (no SIGTERM handler), leaves a lock the designer deletes by hand; the message says how. Dry runs, `status` and `participants` take no lock.
 
-**R21. The confirm run performs only the writes listed in the confirmed summary; the plan is saved under `<workspace>/.plans/<code>.json`.**
-Why: upholds design 4.2.6, "published = what the summary showed". Today a block the summary showed as skipped can be posted if its reason disappears before `--confirm`. Cost: a thread reopened meanwhile waits for the next publish summary.
+**R21. The confirm run performs only the writes listed in the confirmed summary. The dry run saves them to `<workspace>/.plans/<code>.json` (thread, `reply` or `react`, SHA-256 of the exact text); `--confirm` without that file exits with 2; a write that is not listed is skipped as "not in the confirmed summary". The saved summary is deleted after a completed run and after a dry run that plans nothing or errors; a successful dry run deletes summaries older than 7 days.**
+Why: upholds design 4.2.6, "published = what the summary showed". Before this, a block the summary showed as skipped could be posted if its reason disappeared before `--confirm`. Deleting on an empty or failed dry run keeps `--confirm` from acting on a summary the designer did not see last. Cost: a thread reopened meanwhile waits for the next publish summary.
 
-**R22. "Has text" for an outgoing reply = at least one Unicode letter, digit or emoji (category So): `_` alone counts as empty, `👍` is allowed.**
-Why: today an emoji-only reply is refused as empty. Cost: none known.
+**R22. "Has text" for an outgoing reply = at least one Unicode letter, number or emoji (category So): `_` alone counts as empty, `👍` is allowed.**
+Why: before this, an emoji-only reply was refused as empty. Cost: none known.
 
 **R23. `retract` keeps the round file's published marker and clears `state.threads[root].published_reply` when it equals the deleted id; the corrected reply goes out in the next round.**
-Why: the state should not claim a reply that no longer exists. Cost: none known.
+Why: the state should not claim a reply that no longer exists, while the marker records what was posted in that round. Cost: none known.
 
 ### Process
 
@@ -230,3 +230,16 @@ Why: the user asked for parallel agents; worktrees remove shared-tree conflicts.
 
 **R28. The documentation task runs before the CI-tools task.**
 Why: the docs checker's self-test needs passing documents to break on purpose. Cost: none, order only.
+
+### Hardening pass
+
+After the `publish` review and the review of the token commands, a hardening pass fixed the minor findings the reviews had deferred, before the scenario runs with the skill. The log records the reasons for the ordering; for R30 and R31 it records no cost, so none is stated here.
+
+**R29. The hardening pass runs before the scenario runs with the skill (the "GREEN" runs).**
+Why: SKILL.md wording and the duplicate-risk behaviour of `publish` and `collect` both affect what the scenarios measure. Cost: none, order only.
+
+**R30. Order of recording after a write: `state.json` first, then the round file's marker. If `state.json` cannot be saved, the marker is still attempted and the run stops with an explicit message ("the reply went out ... run publish again before collect"). `collect` counts a reply as published when either the marker or the state record says so, so a reply recorded only in the state is never offered as a draft again.**
+Why: a failure in the state save alone used to record nothing, and a missing marker could turn a posted reply back into a draft that was then posted twice. The same pass made the dry run delete an existing saved summary when it plans nothing, made `collect` take the lock, installed the SIGTERM handler, and cleaned up stale `.plans/` files (R20, R21).
+
+**R31. CLI polish from the review of the token commands: an expired token prints `warning: ...` (not `error:`) on stderr and the command goes on; `getpass`'s echo fallback is refused; Ctrl-C and end of input at a prompt end with "cancelled; nothing was stored"; a closed stdin is a refusal, not a crash; `SKILL.md` and the docs say that `doctor` exercises three of the four scopes and warns at 14 days or fewer; every file under `scripts/` is ASCII-only, enforced by `tests/test_source_ascii.py`.**
+Why: an expired token is a condition the user must see, not a reason to stop commands that do not need Figma. `file_comments:write` cannot be tested without posting a comment. Non-ASCII characters in source can hide direction changes or invisible characters from a reviewer.

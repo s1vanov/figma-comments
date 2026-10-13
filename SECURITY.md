@@ -9,9 +9,10 @@ Use GitHub's private vulnerability reporting on [s1vanov/figma-comments](https:/
 What counts as a vulnerability:
 
 - the token reaching stdout, stderr, a log, an exception message, a process argument list, a file in the repository or a host other than `api.figma.com`;
-- anything written to Figma without a matching confirmation code, or anything written that is not in the round file the code was computed from;
+- anything written to Figma without a matching confirmation code, or anything written that is not in the round file the code was computed from, or that the confirmed summary did not list;
 - a reply posted into a resolved thread, posted twice, or a deleted comment that was not the token owner's own reply;
 - comment text that changes what `publish` posts (forging a block, a field or a marker);
+- two writers working in one workspace at the same time (a second `publish --confirm`, `retract --confirm` or `collect` getting past the lock);
 - workspace files written anywhere other than `.figma-comments/<file_key>/`.
 
 What counts as breakage, not a vulnerability: a command that stops working because Figma changed its API, a parse error on a hand-edited round file, a rate-limit stop. Report those as normal issues.
@@ -31,11 +32,13 @@ What counts as breakage, not a vulnerability: a command that stops working becau
 
 Redirects are not followed, so the token header is never forwarded to another host.
 
-**Local files it reads:** the round file you pass to `publish`; `.figma-comments/<file_key>/state.json`, `participants.json` and the previous `round-NN.md` under the current directory; the token file `~/.config/figma-comments/token.json` if it exists.
+**Local files it reads:** the round file you pass to `publish`; `.figma-comments/<file_key>/state.json`, `participants.json`, the previous `round-NN.md` and, for `--confirm`, the saved summary `.plans/<code>.json` under the current directory; the token file `~/.config/figma-comments/token.json` if it exists.
 
 **Local files it writes:**
 
 - `.figma-comments/<file_key>/` under the current directory: `.gitignore` (`*`, created once, never overwritten), `round-NN.md` (created by `collect`, which never overwrites one; `publish --confirm` adds a marker line to each block it posted), `state.json` and `participants.json` (each written to a temp file in the same directory, then renamed);
+- `.figma-comments/<file_key>/.plans/<code>.json`, the saved summary a plain `publish` leaves for `--confirm`: the round name and, per planned write, the thread id, the kind of write and a SHA-256 of the exact text (not the text itself). It is a local file; a dry run still sends nothing to Figma;
+- `.figma-comments/<file_key>/.publish.lock`, while `publish --confirm`, `retract --confirm` or `collect` runs (see [One writer at a time](#one-writer-at-a-time));
 - `~/.config/figma-comments/token.json`, only after `token set --allow-file` on a system without a credential store (POSIX only, directory mode 700, file mode 600);
 - temp files from Python's `tempfile` when `curl` is used: one holds the response headers, one the request body (the reply text). Both are deleted after the request. Neither contains the token.
 
@@ -63,15 +66,17 @@ Nothing else is executed. The skill installs nothing and has no runtime dependen
 
 ## The confirmation code
 
-`publish <round-file>` writes nothing. It prints the plan and a code: the first 10 hexadecimal characters of SHA-256 over the exact bytes of the round file. `publish <round-file> --confirm <code>` recomputes the code from the bytes on disk; if it differs, the command exits with 2 before any request to Figma.
+`publish <round-file>` writes nothing to Figma. It prints the plan and a code: the first 10 hexadecimal characters of SHA-256 over the exact bytes of the round file. It also saves the list of planned writes to `.plans/<code>.json` in the workspace. `publish <round-file> --confirm <code>` recomputes the code from the bytes on disk; if it differs, the command exits with 2 before any request to Figma. It then loads the saved summary for that code; with none (no dry run was made, or it was deleted) it exits with 2 as well, and nothing is written.
 
-**What the code guarantees:** what is published is what was in the file the summary was computed from. Any edit to the file after the summary, even one character, invalidates the code, and a mistyped code is refused the same way. Every reply text posted is the normalized text of a block in that file; nothing outside the file can be posted.
+The confirm run performs only the writes the summary listed. It builds the plan again from the file and checks every thread again, but a write that is in today's plan and was not in the summary is skipped with the reason "not in the confirmed summary". Typical case: a thread the summary showed as skipped because it was resolved, and which was reopened before `--confirm`. Such a thread waits for the next `publish` summary. The comparison uses the thread, the kind of write (reply or reaction) and the hash of the exact text.
+
+**What the code guarantees:** what is published is what the summary listed, taken from the file the summary was computed from. Any edit to the file after the summary, even one character, invalidates the code, and a mistyped code is refused the same way. A reply posted is the normalized text of a block in that file, the same text the summary showed. The confirm run can post fewer writes than the summary listed (a check before the write may skip one), never more, and nothing outside the file can be posted. One thing the confirm run does that is not a write: a reply or a ✅ that Figma already holds (a write whose answer was lost) is recorded as done, whether or not the summary listed it.
 
 **What the code does NOT guarantee:** that a person said yes. An agent that runs `publish` and then `publish --confirm` with the printed code passes the check. That a person approved the summary rests on two things outside this code: the rule in `SKILL.md` that the agent shows the summary and waits for the designer's explicit answer, and the agent's own permission prompt before it runs a command. If your agent runs shell commands without asking, the second safeguard is gone.
 
-**A known gap in 0.1.0.** The code binds the file, not the summary's list of writes. The confirm run builds the plan again from the same file and checks every thread again, so it can only post blocks from that file; but a block the summary listed as skipped (for example, because its thread was resolved) is posted if the reason has disappeared before `--confirm` (the thread was reopened meanwhile). A change that limits the confirm run to the writes listed in the confirmed summary has been decided and is being implemented.
+**The saved summary.** It is deleted after a confirm run that ended without an error, and after a dry run that plans nothing or ends in an error, so `--confirm` never acts on a summary the designer did not see last. A run that stops on an error keeps it; since each write adds a marker to the round file, the file's bytes and so its code change, and the next step is a new dry run. A successful dry run also deletes summaries older than 7 days. Two dry runs of the same file give the same code; the second replaces the first summary.
 
-`retract <ref> <comment_id>` follows the same rule: its code is SHA-256 over the comment id and the comment's current text, so it is refused if the reply changed. Before the delete request, `retract` reads the comments fresh and refuses a comment that is not in the file, a root comment (deleting it removes the whole thread, the client's replies included) and a comment by anyone other than the token owner.
+`retract <ref> <comment_id>` follows the same rule: its code is SHA-256 over the comment id and the comment's current text, so it is refused if the reply changed. Before the delete request, `retract` reads the comments fresh and refuses a comment that is not in the file, a root comment (deleting it removes the whole thread, the client's replies included) and a comment by anyone other than the token owner. After a delete it clears the thread's `published_reply` in `state.json` when that equals the deleted id; the marker in the round file stays, because it records what was posted in that round. The corrected reply goes out in the next round: `collect` brings the thread back and the designer writes the new reply there.
 
 ## Safeguards before every write
 
@@ -81,21 +86,31 @@ These run in `scripts/fclib/publish.py` on a fresh `GET comments` before each re
 - a reply or reaction is skipped when anyone outside the team wrote in the thread at or after the round's collection time (the draft may be stale), or when someone from the team did (it may already be answered);
 - a write whose response was lost is recovered, not repeated: if exactly one reply by the token owner was created in the thread after the collection time, it is recorded as the block's reply; a ✅ by the token owner created after the collection time is recorded as the reaction;
 - the first API error stops the run. Writes are never retried, except that a 429 with `Retry-After` of 300 seconds or less is waited out, because a 429 means the request was not applied;
-- after each successful write the marker goes into the round file (atomic rename, and only if the file on disk is still the one being published) and `state.json` is saved, so a crash at any point leaves a record of what was really posted.
+- a reply with no letter, digit or emoji left after normalization (`_` alone is empty, `👍` is not) stops the whole plan before any request;
+- after each successful write `state.json` is saved first, then the marker goes into the round file (atomic rename, and only if the file on disk is still the one being published). If `state.json` cannot be saved, the marker is still attempted and the run then stops with a message that the reply went out and `publish` must be run again before `collect`. A crash at any point leaves a record of what was really posted;
+- `collect` never offers again a reply that only `state.json` records. A reply counts as published when either the round file's marker or the state record says so, so a missing marker cannot turn a posted reply back into a draft.
 
 An unreadable timestamp counts as "after the collection time", which skips the write rather than posting it.
 
-Two `publish --confirm` runs on the same file at the same moment are not prevented in 0.1.0; a lock file for this has been decided and is being implemented. Run one publish at a time.
+## One writer at a time
+
+`publish --confirm`, `retract --confirm` and `collect` each take an exclusive lock, the file `.figma-comments/<file_key>/.publish.lock`, for the whole run. It holds the process id and the start time. The file is written in full under a temporary name and then hard-linked to the lock name, so taking it is atomic and another process never reads it half-written (where hard links are unavailable, `O_EXCL` is used). The first `collect` for a file, before its workspace exists, has nothing to lock against. `publish` without `--confirm`, `retract` without `--confirm`, `status` and `participants` do not take it.
+
+If the lock exists, the command refuses with exit 1 and writes nothing. **The lock is never removed automatically**, because it may belong to a run that is still posting. A normal end, an error and, on POSIX, SIGTERM release it; SIGKILL, a power cut or a closed laptop can leave it behind (Windows installs no SIGTERM handler). Only the designer deletes a leftover lock, after checking that no run is going. `SKILL.md` tells the agent to stop and ask the designer on a lock refusal and never to delete the lock itself; that part depends on the agent following its instructions.
 
 ## Token handling
 
 - Lookup order: `FIGMA_TOKEN`, the OS credential store, on macOS an older Keychain item `figma-pat`, then the opt-in file.
-- `token set` reads the token with `getpass` (no echo) and refuses to run when stdin is not a terminal, so an agent cannot pipe a token into it. It stores `{"token", "expires"}` as JSON in the credential store.
+- `token set` reads the token with `getpass` (no echo) and refuses to run when stdin is not a terminal, so an agent cannot pipe a token into it. It also refuses the fallback in which `getpass` would echo the input ("cannot read the token without echo"). Ctrl-C or end of input at a prompt ends with "cancelled; nothing was stored". It stores `{"token", "expires"}` as JSON in the credential store.
 - The token is never printed: `token status` and `doctor` show only its source and days left. `TokenInfo` hides the value in its `repr`. HTTP error messages are cut to 200 characters with the token replaced by `***`; a transport error that contains the token is raised again without the original exception attached.
 - The token is never a process argument: see the table above.
 - A token containing control characters is rejected before any request, so it cannot inject a header.
-- Every command that reads the token warns on stderr when it expires within 14 days.
+- Every command that reads the token warns on stderr (`warning: ...`) when it expires within 14 days, and again once it has expired; an expired token does not stop the command, Figma's 403 does. `doctor` verifies the token and its expiry and fails the expiry check only when the token has expired; 14 days or fewer is a warning. It also exercises three of the four scopes: `current_user:read` (`GET /v1/me`), `file_comments:read` (reading the comments) and `file_content:read` (the nodes call). `file_comments:write` cannot be checked without posting a comment, so a missing write scope shows up when `publish` is refused.
 - `token clear` removes this tool's own entry and the token file. It does not touch `FIGMA_TOKEN` or the macOS `figma-pat` item, and says so when either is still found.
+
+## Source files
+
+Everything under `scripts/` is plain ASCII; non-ASCII characters in strings are written as `\uXXXX` escapes. `tests/test_source_ascii.py` fails on any other byte, so an invisible or direction-changing character cannot be hidden in the code a reviewer reads.
 
 ## Test hooks must never be set in real use
 
