@@ -54,6 +54,7 @@ from .publish import REASON_TEXT, CodeMismatch, Entry, PublishReport, publish, r
 from .replay import ReplayTransport
 from .roundfile import RoundParseError, parse_round
 from .state import ensure_workspace, load_state
+from .text import hidden_selector
 from .token_store import TokenMissing, clear_token, days_left, get_token, set_token
 from .urls import FileRef, comment_link, parse_file_ref
 
@@ -416,8 +417,10 @@ REPLY_GUTTER = "     |"
 
 
 def _visible(line: str) -> str:
-    """One line of the exact text with every non-printable character (Cf, Cc, ...) as \\uXXXX."""
-    return "".join(ch if ch.isprintable() else "\\u%04x" % ord(ch) for ch in line)
+    """One line of the exact text with every non-printable character (Cf, Cc, ...) and every
+    hidden variation selector (``text.hidden_selector``) as \\uXXXX."""
+    return "".join("\\u%04x" % ord(ch) if not ch.isprintable() or hidden_selector(line, i) else ch
+                   for i, ch in enumerate(line))
 
 
 def _full_text_lines(text: str) -> List[str]:

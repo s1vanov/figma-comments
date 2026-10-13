@@ -337,6 +337,15 @@ class PlanTests(PublishBase):
         self.assertNotIn("­", out)
         self.assertNotIn("‍", out)
 
+    def test_summary_escapes_variation_selectors_like_the_round_file(self):
+        self.edit(("4200109", "edit", "reply", "Готово \u2764\ufe0f"))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertIn("     | Готово \u2764\ufe0f\n", out)
+        from fclib.cli import _visible
+        self.assertEqual(_visible("a\ufe00b \ufe0f\U000e0100\u2764\ufe0f\ufe0f"),
+                         "a\\ufe00b \\ufe0f\\ue0100\u2764\ufe0f\\ufe0f")
+
     def test_html_comment_in_reply_warns(self):
         self.edit(("4200109", "edit", "reply", "Зроблено <!-- нотатка для себе -->"))
         code, out, err = self.run_cli("publish", self.rel_round())

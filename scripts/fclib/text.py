@@ -29,8 +29,34 @@ class ForbiddenCharacter(ValueError):
         self.code_point = "U+%04X" % ord(ch)
         super().__init__(
             "the reply contains the invisible character %s (a text-direction control, zero-width "
-            "character or tag character); remove it" % self.code_point
+            "character, tag character or variation selector out of place); remove it" % self.code_point
         )
+
+
+_EMOJI_SELECTORS = ("\ufe0e", "\ufe0f")  # text / emoji presentation
+
+
+def _visible_base(ch: str) -> bool:
+    """A character a variation selector may modify: visible, not a mark, format or control."""
+    category = unicodedata.category(ch)
+    return not ch.isspace() and category[0] not in "CMZ"
+
+
+def hidden_selector(text: str, i: int) -> bool:
+    """True when ``text[i]`` is a variation selector that must not pass unnoticed.
+
+    Variation selectors (U+FE00-FE0F, U+E0100-E01EF) are invisible marks that
+    ``str.isprintable`` accepts, so text can hide in them. Kept: ONE U+FE0E or U+FE0F right
+    after a visible base character (the text or emoji presentation of a heart, a keycap, a
+    sign). Everything else is hidden: U+E0100-E01EF always, U+FE00-FE0D, and U+FE0E/FE0F
+    after a space, a mark, another selector or at the start.
+    """
+    o = ord(text[i])
+    if 0xE0100 <= o <= 0xE01EF:
+        return True
+    if 0xFE00 <= o <= 0xFE0F:
+        return not (text[i] in _EMOJI_SELECTORS and i > 0 and _visible_base(text[i - 1]))
+    return False
 
 
 def _has_text(text: str) -> bool:
@@ -50,12 +76,16 @@ def normalize_outgoing(text: str) -> str:
     leading/trailing blank lines are removed. Known side effect: "__init__" becomes
     "init", because paired double underscores are treated as bold markers.
     Raises ForbiddenCharacter (a ValueError) for a tag character, bidi control, LRM/RLM/ALM,
-    ZWSP, word joiner or BOM anywhere in the text (ZWJ and ZWNJ are allowed), and ValueError
+    ZWSP, word joiner or BOM anywhere in the text (ZWJ and ZWNJ are allowed), for a variation
+    selector other than one U+FE0E/FE0F after a visible character (``hidden_selector``), and ValueError
     if nothing sendable remains: no letter, digit or symbol emoji.
     """
     bad = _FORBIDDEN_RE.search(text)
     if bad:
         raise ForbiddenCharacter(bad.group(0))
+    for i, ch in enumerate(text):
+        if hidden_selector(text, i):
+            raise ForbiddenCharacter(ch)
     text = _LINE_BREAK_RE.sub("\n", text)
     text = _LINK_RE.sub(r"\1 (\2)", text)
     for pattern in _INLINE_PATTERNS:

@@ -47,6 +47,18 @@ class NormalizeOutgoingTests(unittest.TestCase):
             self.assertIn(name, str(cm.exception))
             self.assertNotIn(ch, str(cm.exception))
 
+    def test_variation_selectors_are_refused_unless_one_emoji_selector_follows_a_visible_character(self):
+        for text, name in (("ok\ufe00", "U+FE00"), ("ok\ufe0d", "U+FE0D"), ("ok \ufe0f", "U+FE0F"),
+                           ("\ufe0fok", "U+FE0F"), ("ok\u2764\ufe0f\ufe0f", "U+FE0F"),
+                           ("ok\U000e0100", "U+E0100"), ("ok\U000e01ef", "U+E01EF")):
+            with self.assertRaises(ValueError, msg=name) as cm:
+                normalize_outgoing(text)
+            self.assertIn(name, str(cm.exception))
+            self.assertIn("variation selector", str(cm.exception))
+        for kept in ("Done \u2764\ufe0f", "\u00a9\ufe0e 2026", "1\ufe0f\u20e3",
+                     "\U0001F441\ufe0f\u200d\U0001F5E8\ufe0f"):
+            self.assertEqual(normalize_outgoing(kept), kept)
+
     def test_zwj_and_zwnj_are_allowed(self):
         family = "\U0001F468‍\U0001F469‍\U0001F467"
         self.assertEqual(normalize_outgoing("Done " + family), "Done " + family)

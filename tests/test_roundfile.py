@@ -664,6 +664,17 @@ class SanitizeTests(unittest.TestCase):
         out = render_round(META, [item(messages=[("O", "t", "‍x‌")])])
         self.assertIn("> \\u200dx\\u200c", out)
 
+    def test_variation_selectors_are_escaped_except_one_emoji_selector_after_a_visible_character(self):
+        heart = "\u2764\ufe0f"  # the emoji presentation of a heart: kept
+        text_style = "\u00a9\ufe0e"  # the text presentation of a sign: kept
+        hidden = "a\ufe00b \ufe0fc\u2764\ufe0f\ufe0fd\U000e0100e\U000e01ef"
+        out = render_round(META, [item(messages=[("O", "t", heart + text_style + " " + hidden)])])
+        self.assertIn("> " + heart + text_style + " a\\ufe00b \\ufe0fc" + heart
+                      + "\\ufe0fd\\ue0100e\\ue01ef", out)
+        for ch in ("\ufe00", "\U000e0100", "\U000e01ef"):
+            self.assertNotIn(ch, out)
+        parse_round(out)
+
     def test_escape_does_not_alter_line_splitting(self):
         # a client line made only of controls must still be a quoted line, never vanish or merge
         out = render_round(META, [item(messages=[("O", "t", "\x00\n\x01")])])

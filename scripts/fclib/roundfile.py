@@ -49,6 +49,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
 from .state import ACTIONS, FILE_KEY_PATTERN, FILE_KEY_RE, KINDS
+from .text import hidden_selector
 
 __all__ = [
     "ACTIONS",
@@ -199,7 +200,9 @@ def _scrub(s: str) -> str:
     bidi controls, soft hyphen...) become a visible ``\\uXXXX`` escape, so text an agent
     would read but a person would not see cannot hide in the round file. ZWJ (U+200D) and
     ZWNJ (U+200C) between two visible characters stay: emoji sequences and several scripts
-    need them. Line-break characters are NOT handled here: callers split first.
+    need them. Variation selectors are escaped too, except one U+FE0E/FE0F right after a
+    visible character (``text.hidden_selector``). Line-break characters are NOT handled here:
+    callers split first.
     """
     s = _SURROGATE_RE.sub("\ufffd", str(s))
     out = []
@@ -209,7 +212,7 @@ def _scrub(s: str) -> str:
         if ch in _JOINERS and 0 < i < last and _visible_neighbour(s[i - 1]) and _visible_neighbour(s[i + 1]):
             out.append(ch)
         elif ((o < 0x20 and ch != "\t") or 0x7F <= o < 0xA0 or ch in _BIDI_CONTROLS
-              or 0xE0000 <= o <= 0xE007F or unicodedata.category(ch) == "Cf"):
+              or 0xE0000 <= o <= 0xE007F or unicodedata.category(ch) == "Cf" or hidden_selector(s, i)):
             out.append("\\u%04x" % o)
         else:
             out.append(ch)
