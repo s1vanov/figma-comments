@@ -263,7 +263,7 @@ def _thread_lines(args: argparse.Namespace, api: FigmaAPI, ref: FileRef, snap: A
     root = thread.root_id
     state = load_state(ws)
     in_round, why = round_verdict(thread, snap, state.threads.get(root),
-                                  state.rounds[-1]["collected_at"] if state.rounds else None)
+                                  state.rounds[-1]["collected_at"] if state.rounds else None, state.rounds)
     is_root = str(comment.get("id")) == root
     last = thread.messages[-1]
     authors = list(dict.fromkeys(author_label(m, snap) for m in thread.messages))

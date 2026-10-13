@@ -452,6 +452,17 @@ class ThreadLookupTests(CliBase):
         self.assertIn("In the round: no", out)
         self.assertIn("skipped", out)
 
+    def test_status_thread_decides_a_skip_return_by_the_seen_ids_of_the_skip_round(self):
+        from fclib.state import State, ThreadState, save_state
+        put_participants(self.cwd)
+        early = "2026-10-01T00:00:00Z"  # before the root's timestamp: the clock alone would say "client wrote after"
+        for seen, expected in ((["4200109"], "In the round: no"), ([], "In the round: yes")):
+            with self.subTest(seen=seen):
+                save_state(self.ws, State(rounds=[{"n": 1, "collected_at": early, "seen": {"4200109": seen}}],
+                                          threads={"4200109": ThreadState(action="skip", skipped_through=early)}))
+                _, out, _ = self.thread("4200109")
+                self.assertIn(expected, out)
+
     def test_a_deleted_element_is_named_as_such(self):
         put_participants(self.cwd)
         _, out, _ = self.thread("4200107")

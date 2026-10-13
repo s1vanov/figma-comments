@@ -427,6 +427,45 @@ class SkipReturnsTests(CollectBase):
         ))
         self.assertEqual(self.run_collect().skipped, 1)
 
+    def skip_seen(self, through, seen):
+        save_state(self.ws, State(
+            rounds=[{"n": 1, "collected_at": through, "seen": seen}],
+            threads={"4200116": ThreadState(kind="unclear", action="skip", skipped_through=through)},
+        ))
+
+    def add_client_reply(self, created, cid="4300001"):
+        live = self.replay / "comments.json"
+        data = json.loads(live.read_text(encoding="utf-8"))
+        client = next(c["user"] for c in data["comments"] if c["id"] == "4200116")
+        data["comments"].append({"id": cid, "parent_id": "4200116", "user": client, "created_at": created,
+                                 "resolved_at": None, "message": "one more thing", "reactions": []})
+        live.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def test_skip_return_is_decided_by_the_seen_ids_of_the_skip_round_not_the_clock(self):
+        # the skip round's clock was behind Figma's: the root looks "newer" than the skip, but it was seen
+        self.skip_seen("2026-10-10T00:00:00Z", {"4200116": ["4200116"]})
+        self.assertEqual(self.run_collect().skipped, 1)
+
+    def test_unseen_client_message_brings_the_thread_back_even_if_stamped_before_the_skip(self):
+        self.add_client_reply("2026-10-13T08:00:00.000Z")
+        self.skip_seen(LATE, {"4200116": ["4200116"]})
+        result = self.run_collect()
+        self.assertEqual(result.skipped, 0)
+        self.assertIn("4200116", {b.root_id for b in self.blocks(result.round_path)[1]})
+
+    def test_status_thread_uses_the_same_rule(self):
+        from fclib.collect import fetch_snapshot, round_verdict
+        api, _ = api_for(self.replay)
+        snap = fetch_snapshot(api, REF, self.ws)
+        thread = next(t for t in snap.threads if t.root_id == "4200116")
+        ts = ThreadState(kind="unclear", action="skip", skipped_through="2026-10-10T00:00:00Z")
+        rounds = [{"n": 1, "collected_at": "2026-10-10T00:00:00Z", "seen": {"4200116": ["4200116"]}}]
+        self.assertFalse(round_verdict(thread, snap, ts, rounds[-1]["collected_at"], rounds)[0])
+        rounds[0]["seen"] = {"4200116": []}
+        self.assertTrue(round_verdict(thread, snap, ts, rounds[-1]["collected_at"], rounds)[0])
+        del rounds[0]["seen"]  # no record: the clock decides, and the root is newer than the skip
+        self.assertTrue(round_verdict(thread, snap, ts, rounds[-1]["collected_at"], rounds)[0])
+
     def test_unreadable_skip_time_shows_the_thread(self):
         save_state(self.ws, State(
             rounds=[{"n": 1, "collected_at": LATE}],

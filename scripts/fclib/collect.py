@@ -25,7 +25,8 @@ Which threads become blocks (spec 4.2 and 5.3):
   reply+react block only the reaction is carried (``_record_lost_replies``);
 * excluded: closed threads, threads with an unknown author (their authors are reported),
   and skipped threads. A skip hides a thread only until a client writes after it was
-  decided (`skipped_through`); then the thread returns as "client replied".
+  decided: a client message the skip's round did not see (its ``seen`` ids; by time
+  against `skipped_through` without that record); then the thread returns as "client replied".
 """
 from __future__ import annotations
 
@@ -188,8 +189,12 @@ def unknown_in(thread: Thread, snap: Snapshot) -> List[str]:
 
 
 def round_verdict(thread: Thread, snap: Snapshot, ts: Optional[ThreadState],
-                  last_collected: Optional[str]) -> Tuple[bool, str]:
-    """(would collect put it in a round, why). Mirrors the order of rules in collect."""
+                  last_collected: Optional[str],
+                  rounds: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, str]:
+    """(would collect put it in a round, why). Mirrors the order of rules in collect.
+
+    `rounds`: state.json's rounds, for the seen ids of the round where a skip was recorded.
+    """
     group = snap.group_of[thread.root_id]
     pending = _carry_state(ts)
     label = GROUP_LABELS[group]
@@ -201,7 +206,7 @@ def round_verdict(thread: Thread, snap: Snapshot, ts: Optional[ThreadState],
     if ts is not None and ts.action == "skip":
         if group not in _BLOCK_LABELS:
             return False, "skipped by 'skip', and the thread is %s" % label
-        if _client_wrote_after(thread, snap, ts.skipped_through or last_collected):
+        if _client_wrote_after_skip(thread, snap, ts, last_collected, rounds or []):
             return True, "skipped earlier, but a client wrote after that; it returns as client replied"
         return False, "skipped by 'skip'; hidden until a client writes after %s" % (
             ts.skipped_through or last_collected or "the skip")
@@ -390,6 +395,29 @@ def _read_previous_round(ws: Path, state: State, key: str) -> Tuple[Optional[str
     return name, blocks
 
 
+def _is_client_message(message: dict, snap: Snapshot) -> bool:
+    uid = _uid(message)
+    return uid != snap.owner_id and uid in snap.people and snap.people[uid].side == "client"
+
+
+def _client_wrote_after_skip(thread: Thread, snap: Snapshot, ts: ThreadState,
+                             last_collected: Optional[str], rounds: List[Dict[str, Any]]) -> bool:
+    """A client message the round where the skip was recorded did not see.
+
+    That round is the one whose ``collected_at`` equals ``skipped_through`` (the latest such
+    entry). Its ``seen`` ids decide, so Figma's clock is never compared with ours; a client
+    message id not among them brings the thread back. Only when that round has no ``seen``
+    record (or none matches) does the timestamp rule apply (``_client_wrote_after``).
+    """
+    through = ts.skipped_through or last_collected
+    entry = next((r for r in reversed(rounds) if through and r.get("collected_at") == through), None)
+    seen = round_seen(entry)
+    if seen is None:
+        return _client_wrote_after(thread, snap, through)
+    ids = seen.get(thread.root_id, set())
+    return any(_is_client_message(m, snap) and str(m.get("id")) not in ids for m in thread.messages)
+
+
 def _client_wrote_after(thread: Thread, snap: Snapshot, through: Optional[str]) -> bool:
     try:
         limit = parse_ts(through) if through else None
@@ -397,11 +425,7 @@ def _client_wrote_after(thread: Thread, snap: Snapshot, through: Optional[str]) 
         return True  # an unreadable time must show the thread, not hide it
     if limit is None:
         return False
-    return any(
-        _uid(m) != snap.owner_id and _uid(m) in snap.people and snap.people[_uid(m)].side == "client"
-        and parse_ts(m["created_at"]) > limit
-        for m in thread.messages
-    )
+    return any(_is_client_message(m, snap) and parse_ts(m["created_at"]) > limit for m in thread.messages)
 
 
 def _utc_z(moment: datetime) -> str:
@@ -491,7 +515,7 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
         if ts is not None and ts.action == "skip":
             if group not in _BLOCK_LABELS:
                 continue
-            if _client_wrote_after(thread, snap, ts.skipped_through or last_collected):
+            if _client_wrote_after_skip(thread, snap, ts, last_collected, state.rounds):
                 included.append((thread, "client replied", "", ""))
             else:
                 skipped += 1
