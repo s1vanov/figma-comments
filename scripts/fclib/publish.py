@@ -2,13 +2,15 @@
 
 A posted reply cannot be edited, so everything here refuses by default (spec 4.2.6, 4.3, 6):
 
-* nothing is written without a confirmed summary. ``publish <file>`` prints the plan and
-  ``confirm_code`` = the first 10 hex characters of sha256 over the EXACT bytes of the
-  round file, and saves the listed writes to ``<ws>/.plans/<code>.json`` as
-  (root, action, sha256 of the exact text or "react"). ``--confirm`` recomputes the code
-  from the current bytes (mismatch: ``CodeMismatch``, no request), needs that saved
-  summary, and makes only the writes it lists; a write that would be planned now but was
-  not listed (a thread reopened since the summary) is skipped as NOT_IN_SUMMARY;
+* nothing is written without a confirmed summary. ``publish <file>`` prints the plan,
+  saves the listed writes to ``<ws>/.plans/<code>.json`` as (root, action, sha256 of the
+  exact text or "react"), and prints ``confirm_code`` = the first 10 hex characters of
+  sha256(EXACT bytes of the round file + b"\0" + ``canonical_plan`` of that summary), so
+  the code authenticates both. ``--confirm`` loads the summary named by the code and
+  recomputes the code from the current file and that summary (missing, damaged or any
+  mismatch: ``CodeMismatch``, exit 2, no request), and makes only the writes it lists; a
+  write that would be planned now but was not listed (a thread reopened since the
+  summary) is skipped as NOT_IN_SUMMARY;
 * one writer at a time per workspace: ``<ws>/.publish.lock`` (lock.py) is taken for a
   confirmed publish or retract, and by collect, and removed when it ends (SIGTERM included).
   An existing lock refuses the run (``LockBusy``) and is never removed automatically;
@@ -158,8 +160,15 @@ class RetractReport:
 # codes, messages, lock, saved summary
 # ---------------------------------------------------------------------------
 
-def confirm_code(file_bytes: bytes) -> str:
-    return hashlib.sha256(file_bytes).hexdigest()[:CODE_LEN]
+def canonical_plan(round_name: str, items: List[Dict[str, str]]) -> bytes:
+    """The saved summary as the confirm code hashes it: sorted keys, no spaces, ASCII."""
+    payload = {"items": items, "round": round_name}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def confirm_code(file_bytes: bytes, plan_bytes: bytes) -> str:
+    """First 10 hex of sha256(round-file bytes + NUL + canonical plan JSON bytes)."""
+    return hashlib.sha256(file_bytes + b"\0" + plan_bytes).hexdigest()[:CODE_LEN]
 
 
 def retract_code(comment_id: str, message: str) -> str:
@@ -196,12 +205,36 @@ def _plan_path(ws: Path, code: str) -> Path:
     return Path(ws) / PLANS_DIR / ("%s.json" % code)
 
 
-def _save_summary(ws: Path, report: PublishReport) -> None:
-    items = [dict(zip(("root", "action", "hash"), _item_key(e.root_id, e.action, e.text))) for e in report.planned]
-    payload = {"code": report.code, "round": report.round_name, "items": items}
+_ITEM_FIELDS = ("root", "action", "hash")
+
+
+def _plan_items(report: PublishReport) -> List[Dict[str, str]]:
+    return [dict(zip(_ITEM_FIELDS, _item_key(e.root_id, e.action, e.text))) for e in report.planned]
+
+
+def _save_summary(ws: Path, code: str, round_name: str, items: List[Dict[str, str]]) -> None:
+    payload = {"code": code, "round": round_name, "items": items}
     folder = Path(ws) / PLANS_DIR
     folder.mkdir(exist_ok=True)
-    _atomic_write(_plan_path(ws, report.code), (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    _atomic_write(_plan_path(ws, code), (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+
+
+def _read_summary(path: Path) -> Optional[Tuple[str, str, List[Dict[str, str]]]]:
+    """(code, round name, items) of a saved summary, or None when it is missing or not exactly that shape."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or set(data) != {"code", "round", "items"}:
+        return None
+    code, name, items = data["code"], data["round"], data["items"]
+    if not (isinstance(code, str) and isinstance(name, str) and isinstance(items, list)):
+        return None
+    for item in items:
+        if not (isinstance(item, dict) and sorted(item) == sorted(_ITEM_FIELDS)
+                and all(isinstance(v, str) for v in item.values())):
+            return None
+    return code, name, items
 
 
 def _discard_summary(ws: Path, code: str) -> None:
@@ -209,6 +242,28 @@ def _discard_summary(ws: Path, code: str) -> None:
         _plan_path(ws, code).unlink()
     except OSError:
         pass
+
+
+def _discard_summaries_for(ws: Path, raw: bytes) -> None:
+    """Delete every saved summary made for these exact round-file bytes; best effort.
+
+    A confirm must never act on a summary the designer did not see last: a new dry run of
+    the same file (with a plan that changed meanwhile, nothing to plan, or an error)
+    replaces whatever an earlier one saved.
+    """
+    try:
+        paths = list((Path(ws) / PLANS_DIR).glob("*.json"))
+    except OSError:
+        return
+    for path in paths:
+        data = _read_summary(path)
+        if data is None or path.stem != data[0]:
+            continue
+        if confirm_code(raw, canonical_plan(data[1], data[2])) == data[0]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def _prune_summaries(ws: Path, now: Optional[float] = None) -> None:
@@ -226,22 +281,22 @@ def _prune_summaries(ws: Path, now: Optional[float] = None) -> None:
             pass
 
 
-def _load_summary(ws: Path, code: str) -> Set[Tuple[str, str, str]]:
-    missing = CodeMismatch("no saved summary for this code; run publish without --confirm first")
-    if not _CODE_RE.fullmatch(code):
-        raise missing
-    try:
-        data = json.loads(_plan_path(ws, code).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raise missing from None
-    items = data.get("items") if isinstance(data, dict) else None
-    if not isinstance(items, list) or data.get("code") != code:
-        raise missing
-    out = set()
-    for item in items:
-        if isinstance(item, dict) and all(isinstance(item.get(k), str) for k in ("root", "action", "hash")):
-            out.add((item["root"], item["action"], item["hash"]))
-    return out
+def _load_summary(ws: Path, code: str, raw: bytes) -> Set[Tuple[str, str, str]]:
+    """The writes the summary for `code` lists, after checking `code` against the file and it.
+
+    CodeMismatch (nothing was requested) when there is no summary for the code, or when the
+    code recomputed from the current round-file bytes and the saved summary differs: the
+    file changed, or the summary was edited, damaged or swapped.
+    """
+    path = _plan_path(ws, code)
+    if not _CODE_RE.fullmatch(code) or not path.is_file():
+        raise CodeMismatch("no saved summary for this code (wrong code, or no dry run made it); "
+                           "run publish without --confirm first")
+    data = _read_summary(path)
+    if data is None or data[0] != code or confirm_code(raw, canonical_plan(data[1], data[2])) != code:
+        raise CodeMismatch("the round file or its saved summary changed since the dry run; "
+                           "run publish without --confirm again")
+    return {(item["root"], item["action"], item["hash"]) for item in data[2]}
 
 
 # ---------------------------------------------------------------------------
@@ -554,9 +609,6 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
     meta, blocks = parse_round(text)
     if root is not None:
         ws = _workspace_of(round_path, meta.file_key, Path(root))
-    code = confirm_code(raw)
-    if confirm is not None and not _code_matches(confirm, code):
-        raise CodeMismatch("the round file changed or the code is wrong; run publish without --confirm again")
     ws = Path(ws) if ws is not None else round_path.parent
     if ws.name != meta.file_key:
         raise ValueError(
@@ -567,21 +619,23 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
         collected_at = parse_ts(meta.collected_at)
     except ValueError:
         raise ValueError("%s has an unreadable collection time" % round_path.name) from None
-    allowed = _load_summary(ws, code) if confirm is not None else None
 
     if confirm is None:
         try:
-            report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, code, None)
+            report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, "", None)
         except BaseException:
-            _discard_summary(ws, code)
+            _discard_summaries_for(ws, raw)
             raise
+        items = _plan_items(report)
+        report.code = confirm_code(raw, canonical_plan(report.round_name, items))
+        _discard_summaries_for(ws, raw)  # only the summary shown now may be confirmed
         if report.error is None and (report.planned or report.recovered):
-            _save_summary(ws, report)
-        else:
-            _discard_summary(ws, code)  # nothing (or an error) shown: no summary to confirm
+            _save_summary(ws, report.code, report.round_name, items)
         if report.error is None:
             _prune_summaries(ws)
         return report
+    code = confirm.strip().lower()
+    allowed = _load_summary(ws, code, raw)  # CodeMismatch before any request
     with workspace_lock(ws):
         report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, code, allowed)
     if report.error is None:

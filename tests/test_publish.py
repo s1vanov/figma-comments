@@ -32,6 +32,7 @@ from fclib.participants import load_participants
 from fclib.publish import (
     CodeMismatch,
     PlanItem,
+    canonical_plan,
     SkipReason,
     build_plan,
     confirm_code,
@@ -111,10 +112,10 @@ class PublishBase(unittest.TestCase):
         `between` changes Figma after the summary and before the confirmed run: that is what
         the per-write preflight must catch.
         """
-        self.dry_run()
+        code = self.dry_run().code
         if between is not None:
             between()
-        return publish(self.api(fail, wrap), self.round, confirm=confirm_code(self.round.read_bytes()))
+        return publish(self.api(fail, wrap), self.round, confirm=code)
 
     def writes(self):
         path = self.replay / "writes.jsonl"
@@ -173,10 +174,55 @@ class PublishBase(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ConfirmTests(PublishBase):
-    def test_confirm_code_is_sha256_prefix_of_exact_bytes(self):
-        data = self.round.read_bytes()
-        self.assertEqual(confirm_code(data), hashlib.sha256(data).hexdigest()[:10])
-        self.assertNotEqual(confirm_code(data), confirm_code(data + b"\n"))
+    def test_confirm_code_binds_the_exact_file_bytes_and_the_saved_plan(self):
+        data, plan = self.round.read_bytes(), b'{"items":[],"round":"round-01.md"}'
+        self.assertEqual(confirm_code(data, plan), hashlib.sha256(data + b"\0" + plan).hexdigest()[:10])
+        self.assertNotEqual(confirm_code(data, plan), confirm_code(data + b"\n", plan))
+        self.assertNotEqual(confirm_code(data, plan), confirm_code(data, plan + b" "))
+
+    def test_the_printed_code_is_computed_from_the_file_and_the_saved_plan(self):
+        self.four_writes()
+        _, out, _ = self.run_cli("publish", self.rel_round())
+        code = self.code_from(out)
+        saved = json.loads((self.ws / ".plans" / ("%s.json" % code)).read_text(encoding="utf-8"))
+        self.assertEqual(saved["code"], code)
+        self.assertEqual(code, confirm_code(self.round.read_bytes(), canonical_plan(saved["round"], saved["items"])))
+
+    def test_an_edited_plan_file_refuses_with_exit_2_and_no_writes(self):
+        self.four_writes()
+        _, out, _ = self.run_cli("publish", self.rel_round())
+        code = self.code_from(out)
+        plan_file = self.ws / ".plans" / ("%s.json" % code)
+        original = plan_file.read_text(encoding="utf-8")
+
+        def widen(data):  # a write the designer never saw
+            data["items"].append({"root": "4200117", "action": "react", "hash": "react"})
+
+        def swap_text(data):  # another reply text for a listed write
+            data["items"][0]["hash"] = hashlib.sha256("Something else".encode("utf-8")).hexdigest()
+
+        def narrow(data):
+            data["items"].pop()
+
+        def rename(data):
+            data["round"] = "round-02.md"
+
+        for change in (widen, swap_text, narrow, rename):
+            data = json.loads(original)
+            change(data)
+            plan_file.write_text(json.dumps(data), encoding="utf-8")
+            rc, out2, err = self.run_cli("publish", self.rel_round(), "--confirm", code)
+            self.assertEqual(rc, 2, change.__name__)
+            self.assertIn("saved summary changed", err)
+            self.assertEqual(self.writes(), [], change.__name__)
+        plan_file.write_text("not json", encoding="utf-8")
+        rc, _, err = self.run_cli("publish", self.rel_round(), "--confirm", code)
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.writes(), [])
+        plan_file.write_text(original, encoding="utf-8")  # the untouched summary still works
+        rc, out2, err = self.run_cli("publish", self.rel_round(), "--confirm", code)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(self.writes()), 4)
 
     def test_no_code_no_writes(self):
         self.four_writes()
@@ -184,7 +230,7 @@ class ConfirmTests(PublishBase):
         state_before = (self.ws / "state.json").read_bytes()
         code, out, err = self.run_cli("publish", self.rel_round())
         self.assertEqual(code, 0, err)
-        self.assertIn("confirm code: %s" % confirm_code(before), out)
+        self.assertRegex(out, r"confirm code: [0-9a-f]{10}\n")
         self.assertIn("2 replies, 2 reactions", out)
         self.assertEqual(self.writes(), [])
         self.assertEqual(self.round.read_bytes(), before)
@@ -195,7 +241,8 @@ class ConfirmTests(PublishBase):
         self.four_writes()
         code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", "0000000000")
         self.assertEqual(code, 2)
-        self.assertIn("the round file changed or the code is wrong; run publish without --confirm again", err)
+        self.assertIn("no saved summary for this code", err)
+        self.assertIn("run publish without --confirm first", err)
         self.assertEqual(self.writes(), [])
 
         _, out, _ = self.run_cli("publish", self.rel_round())
@@ -204,6 +251,7 @@ class ConfirmTests(PublishBase):
         before = self.round.read_bytes()
         code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", stale)
         self.assertEqual(code, 2)
+        self.assertIn("the round file or its saved summary changed since the dry run", err)
         self.assertEqual(self.writes(), [])
         self.assertEqual(self.round.read_bytes(), before)
 
@@ -760,7 +808,7 @@ class ResumeTests(PublishBase):
 class SummaryAndLockTests(PublishBase):
     def test_confirm_without_a_saved_summary_refuses(self):
         self.four_writes()
-        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", confirm_code(self.round.read_bytes()))
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", "0123456789")
         self.assertEqual(code, 2)
         self.assertIn("run publish without --confirm first", err)
         self.assertEqual(self.writes(), [])
@@ -1040,7 +1088,7 @@ class HardeningTests(PublishBase):
 
     def test_lock_content_is_complete_before_the_lock_appears(self):
         self.edit(("4200116", "unclear", "reply", "Що саме?"))
-        self.dry_run()
+        code = self.dry_run().code
         seen = []
         real_link = os.link
 
@@ -1050,7 +1098,7 @@ class HardeningTests(PublishBase):
             return real_link(src, dst, *args, **kwargs)
 
         with mock.patch("os.link", side_effect=spy):
-            publish(self.api(), self.round, confirm=confirm_code(self.round.read_bytes()))
+            publish(self.api(), self.round, confirm=code)
         self.assertEqual(len(seen), 1)
         self.assertIn("pid %d\nsince " % os.getpid(), seen[0])
         self.assertEqual(list(self.ws.glob("*.tmp")), [])
