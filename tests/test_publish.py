@@ -1179,6 +1179,36 @@ class RetractTests(PublishBase):
         self.assertEqual(self.blocks()["4200109"].published_reply, "9100001")  # ruling: marker stays
         self.assertFalse((self.ws / ".publish.lock").exists())
 
+    def retract_out(self, comment_id):
+        message = next(c["message"] for c in self.live()["comments"] if c["id"] == comment_id)
+        code, out, err = self.run_cli("retract", KEY, comment_id, "--confirm", retract_code(comment_id, message))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Reply %s deleted." % comment_id, out)
+        return out
+
+    def test_retract_wording_follows_where_the_thread_stands_after_the_delete(self):
+        self.add_reply("4200107", OWNER, cid="4300001", text="ours")  # after team-2's 4200110
+        ready = ("Your \u2705 is still on this thread, so collect will list it as ready to close; "
+                 "remove the \u2705 in Figma if you want the thread back in the next round.")
+        cases = (
+            ("4200106", ready),  # 4200104 carries our check mark
+            ("4200114", "no client message"),  # internal thread
+            ("4300001", "waiting for the client"),  # the team's 4200110 is the last message again
+            ("4200102", "resolved"),
+        )
+        for comment_id, expected in cases:
+            with self.subTest(comment_id=comment_id):
+                out = self.retract_out(comment_id)
+                self.assertIn(expected, out)
+                self.assertNotIn("comes back", out)
+
+    def test_retract_after_reply_and_react_names_the_check_mark(self):
+        self.edit(("4200111", "edit", "reply+react", "Прибрав знижку."))
+        self.publish_now()
+        out = self.retract_out("9100001")
+        self.assertIn("Your \u2705 is still on this thread, so collect will list it as ready to close", out)
+        self.assertNotIn("comes back", out)
+
     def test_retract_code_binds_id_and_text(self):
         self.assertEqual(retract_code("5", "hi"), hashlib.sha256(b"5\nhi").hexdigest()[:10])
         self.assertNotEqual(retract_code("5", "hi"), retract_code("5", "hi!"))

@@ -552,6 +552,29 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _after_retract(report: Any) -> str:
+    """What happens to the thread next; "comes back" only where collect really brings it back."""
+    group = report.group_after
+    root = _clean(report.root_id)
+    if group in (Group.NEW, Group.CLIENT_REPLIED):
+        return "Run collect: the thread comes back and you write the corrected reply there."
+    if group is Group.READY_TO_CLOSE:
+        whose = "Your \u2705 is" if report.own_check else "A team \u2705 is"
+        return ("%s still on this thread, so collect will list it as ready to close; remove the \u2705 in "
+                "Figma if you want the thread back in the next round." % whose)
+    if group is Group.WAITING_CLIENT:
+        return ("The last message in thread %s is still the team's, so collect lists it as waiting for the "
+                "client and puts no block in the round until the client writes." % root)
+    if group is Group.INTERNAL:
+        return "Thread %s has no client message, so collect puts no block for it in a round." % root
+    if group is Group.RESOLVED:
+        return "Thread %s is resolved in Figma, so collect puts no block for it in a round." % root
+    if group is Group.UNKNOWN_AUTHOR:
+        return ("Thread %s has an author who is in neither list; classify them with participants set, "
+                "then run collect." % root)
+    return "See where thread %s stands with: %s status <file> --thread %s" % (root, PROG, root)
+
+
 def cmd_retract(args: argparse.Namespace) -> int:
     ref = parse_file_ref(args.ref)
     workspace_path(Path.cwd(), ref.file_key)  # a symlinked or outside workspace is refused
@@ -565,8 +588,7 @@ def cmd_retract(args: argparse.Namespace) -> int:
         print("error: %s" % _clean(stop_message(exc, "retract")), file=sys.stderr)
         return 1
     if report.deleted:
-        _emit(["Reply %s deleted. Run collect: the thread comes back and you write the corrected reply there."
-               % _clean(report.comment_id)])
+        _emit(["Reply %s deleted. %s" % (_clean(report.comment_id), _after_retract(report))])
         return 0
     quoted = ["  > " + _clean(line) for line in report.message.splitlines()] or ["  > (empty)"]
     _emit(["Your reply %s will be deleted (this cannot be undone):" % _clean(report.comment_id)]

@@ -66,7 +66,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from .api import REACTION_EMOJI, FigmaAPI
 from .http import FigmaHTTPError, TransportError
 from .lock import LOCK_NAME, LockBusy, workspace_lock  # noqa: F401  (LOCK_NAME, LockBusy: re-exported)
-from .model import Participant, Thread, build_threads, parse_ts
+from .model import CHECK_EMOJI, Group, Participant, Thread, build_threads, classify, parse_ts
 from .participants import load_participants
 from .roundfile import Block, RoundMeta, mark_published, parse_round
 from .state import (
@@ -157,6 +157,10 @@ class RetractReport:
     message: str
     code: str
     deleted: bool = False
+    root_id: str = ""
+    # where the thread stands once the reply is gone (decided before the delete, read-only)
+    group_after: Optional[Group] = None
+    own_check: bool = False  # the token owner's check mark is somewhere in the thread
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +813,25 @@ def retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[str
     return _retract(api, file_key, comment_id, None, ws)
 
 
+def _thread_after(report: RetractReport, comments: List[Dict[str, Any]], owner_id: str,
+                  ws: Optional[Path]) -> None:
+    """Fill in how collect will see the thread once the reply is deleted. Never raises:
+    it runs before the delete and must not stop it; unknown stays None."""
+    try:
+        people = load_participants(str(Path(ws) / PARTICIPANTS_FILE)) if ws is not None else {}
+        remaining = [c for c in comments if str(c.get("id")) != report.comment_id]
+        thread = next((t for t in build_threads(remaining) if t.root_id == report.root_id), None)
+        if thread is None:
+            return
+        report.group_after = classify(thread, people, owner_id)
+        report.own_check = any(
+            isinstance(r, dict) and r.get("emoji") == CHECK_EMOJI and _uid(r) == owner_id
+            for m in thread.messages for r in m.get("reactions") or []
+        )
+    except (ValueError, OSError, KeyError, TypeError):
+        report.group_after = None
+
+
 def _retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[str],
              ws: Optional[Path]) -> RetractReport:
     comments = api.comments(file_key)
@@ -825,11 +848,13 @@ def _retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[st
     if _uid(target) != owner_id:
         raise ValueError("comment %s was written by someone else; retract deletes only your own replies" % comment_id)
     message = str(target.get("message") or "")
-    report = RetractReport(comment_id=comment_id, message=message, code=retract_code(comment_id, message))
+    report = RetractReport(comment_id=comment_id, message=message, code=retract_code(comment_id, message),
+                           root_id=root)
     if confirm is None:
         return report
     if not _code_matches(confirm, report.code):
         raise CodeMismatch("the comment changed or the code is wrong; run retract without --confirm again")
+    _thread_after(report, comments, owner_id, ws)
     api.delete(file_key, comment_id)
     report.deleted = True
     if ws is not None and (Path(ws) / "state.json").exists():
