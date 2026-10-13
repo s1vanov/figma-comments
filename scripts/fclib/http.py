@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import ssl
 import subprocess
 import tempfile
@@ -22,6 +23,7 @@ BASE_URL = "https://api.figma.com"
 TIMEOUT = 30
 DEFAULT_RETRY_WAIT = 30
 MAX_RETRY_WAIT = 300  # never block an agent shell longer than this
+MAX_TOTAL_RETRY_WAIT = 600  # all Retry-After sleeping of one Client (one command run)
 TOKEN_HEADER = "X-Figma-Token"
 ERROR_MESSAGE_LIMIT = 200
 
@@ -89,13 +91,19 @@ class UrllibTransport:
             raise
 
 
+# ``-q`` must be the first argument (curl reads ~/.curlrc otherwise, which could add a
+# proxy, a trace file or a redirect policy); then HTTPS only, no redirects (the token must
+# never be sent to another host), TLS 1.2 or newer.
+CURL_SAFETY_ARGS = ("-q", "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "0", "--tlsv1.2")
+
+
 class CurlTransport:
     """Shells out to curl. Headers go via stdin (``-H @-``), the body via a
     temp file, so the token never appears in argv. Requires curl >= 7.55
-    (``-H @-``)."""
+    (``-H @-``). The curl executable is resolved once, with ``shutil.which``."""
 
     def __init__(self, curl: str = "curl") -> None:
-        self.curl = curl
+        self.curl = shutil.which(curl)
 
     def request(
         self,
@@ -104,12 +112,15 @@ class CurlTransport:
         headers: Dict[str, str],
         body: Optional[bytes],
     ) -> Response:
+        if self.curl is None:
+            raise TransportError("curl was not found on PATH (needed when Python cannot verify the TLS certificate)")
         hdr_fd, hdr_path = tempfile.mkstemp(prefix="fc-hdr-")
         os.close(hdr_fd)
         body_path = None  # type: Optional[str]
         try:
             args = [
                 self.curl,
+                *CURL_SAFETY_ARGS,
                 "-sS",
                 "--max-time",
                 str(TIMEOUT),
@@ -202,6 +213,7 @@ class Client:
         self.transport = transport
         self.sleep = sleep
         self.max_retries = max_retries
+        self._slept = 0  # seconds of Retry-After waiting so far, across every call
 
     def __repr__(self) -> str:
         return "Client(transport=%r)" % (self.transport,)
@@ -228,7 +240,7 @@ class Client:
         while True:
             try:
                 resp = self.transport.request(method, url, headers, data)
-            except (ValueError, TransportError, OSError) as e:
+            except Exception as e:  # any type: a message that carries the token is redacted
                 if self._token and (
                     self._token in str(e) or self._token in repr(e)
                 ):
@@ -244,7 +256,10 @@ class Client:
                         429,
                         "rate limited: Figma asks to wait %d s; try again later" % wait,
                     )
+                if self._slept + wait > MAX_TOTAL_RETRY_WAIT:
+                    raise FigmaHTTPError(429, "rate limited for too long; try again later")
                 attempt += 1
+                self._slept += wait
                 self.sleep(wait)
                 continue
             raise FigmaHTTPError(resp.status, self._error_message(resp.body))

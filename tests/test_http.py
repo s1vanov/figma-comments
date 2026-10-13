@@ -129,6 +129,31 @@ class ClientTests(unittest.TestCase):
         self.assertIsNone(cm.exception.__cause__)
         self.assertTrue(cm.exception.__suppress_context__)
 
+    def test_any_transport_exception_carrying_the_token_is_redacted(self):
+        import http.client
+
+        for exc in (RuntimeError("boom %s" % TOKEN), http.client.InvalidURL("bad %s" % TOKEN),
+                    KeyError(TOKEN), UnicodeEncodeError("latin-1", TOKEN, 0, 1, "no")):
+            with self.assertRaises(TransportError, msg=type(exc).__name__) as cm:
+                Client(TOKEN, Raiser(exc)).call("GET", "/x")
+            self.assertNotIn(TOKEN, str(cm.exception))
+            self.assertNotIn(TOKEN, repr(cm.exception))
+            self.assertIsNone(cm.exception.__cause__)
+            self.assertTrue(cm.exception.__suppress_context__)
+
+    def test_total_retry_after_sleep_is_capped_at_600_s_per_client(self):
+        c, t, sleeps = self.make([resp(429, b"", {"Retry-After": "300"}), resp(200),
+                                  resp(429, b"", {"Retry-After": "300"}), resp(200),
+                                  resp(429, b"", {"Retry-After": "1"}), resp(200)])
+        c.call("GET", "/v1/me")
+        c.call("GET", "/v1/me")  # 600 s slept in all: still allowed
+        with self.assertRaises(FigmaHTTPError) as cm:
+            c.call("GET", "/v1/me")  # one more second would pass the budget
+        self.assertEqual(cm.exception.status, 429)
+        self.assertEqual(cm.exception.message, "rate limited for too long; try again later")
+        self.assertEqual(sleeps, [300, 300])
+        self.assertEqual(len(t.calls), 5)
+
     def test_transport_exception_without_token_unchanged(self):
         err = TransportError("curl exited with 6: Could not resolve host")
 
@@ -267,6 +292,31 @@ class CurlTransportTests(unittest.TestCase):
         self.assertEqual(captured["body_content"], b'{"a": 1}')
         self.assertEqual(r.status, 200)
         self.assertEqual(r.body, b'{"ok": true}')
+
+    def test_curl_argv_ignores_curlrc_and_allows_only_https_without_redirects(self):
+        captured = {}
+        with mock.patch("fclib.http.shutil.which", return_value="/opt/bin/curl") as which:
+            t = CurlTransport()
+        with mock.patch("fclib.http.subprocess.run", side_effect=self.fake_run(captured)):
+            t.request("GET", "https://api.figma.com/v1/me", {"A": "b"}, None)
+            t.request("GET", "https://api.figma.com/v1/me", {"A": "b"}, None)
+        which.assert_called_once_with("curl")  # resolved once, at construction
+        args = captured["args"]
+        self.assertEqual(args[0], "/opt/bin/curl")
+        self.assertEqual(args[1], "-q")  # must be the first option, or ~/.curlrc is read
+        joined = " ".join(args)
+        for flag in ("--proto =https", "--proto-redir =https", "--max-redirs 0", "--tlsv1.2"):
+            self.assertIn(flag, joined)
+
+    def test_curl_not_found_raises_transport_error(self):
+        with mock.patch("fclib.http.shutil.which", return_value=None):
+            t = CurlTransport()
+        with mock.patch("fclib.http.subprocess.run") as run:
+            with self.assertRaises(TransportError) as cm:
+                t.request("GET", "https://api.figma.com/v1/me", {"X-Figma-Token": TOKEN}, None)
+        run.assert_not_called()
+        self.assertIn("curl", str(cm.exception))
+        self.assertNotIn(TOKEN, str(cm.exception))
 
     def test_curl_body_tempfile_deleted(self):
         captured = {}
