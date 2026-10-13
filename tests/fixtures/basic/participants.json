@@ -1,0 +1,23 @@
+{
+  "team-1": {
+    "handle": "Designer",
+    "side": "team",
+    "role": "Designer (token owner)"
+  },
+  "team-2": {
+    "handle": "Manager",
+    "side": "team",
+    "role": "Account manager"
+  },
+  "client-1": {
+    "handle": "Olena",
+    "side": "client",
+    "role": "Marketing lead",
+    "lead": true
+  },
+  "client-2": {
+    "handle": "Taras",
+    "side": "client",
+    "role": "Product owner"
+  }
+}

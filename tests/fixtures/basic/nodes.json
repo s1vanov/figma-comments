@@ -1,0 +1,183 @@
+{
+  "name": "Sandbox file",
+  "lastModified": "2026-10-13T16:50:12Z",
+  "thumbnailUrl": "https://example.invalid/thumbnails/sandbox.png",
+  "version": "2409894124987939141",
+  "role": "owner",
+  "editorType": "figma",
+  "linkAccess": "view",
+  "nodes": {
+    "1:2": {
+      "document": {
+        "id": "1:2",
+        "name": "Landing",
+        "type": "FRAME",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "absoluteBoundingBox": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 1800
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "children": [
+          {
+            "id": "1:3",
+            "name": "Hero title",
+            "type": "TEXT"
+          },
+          {
+            "id": "1:4",
+            "name": "Hero subtitle",
+            "type": "TEXT"
+          },
+          {
+            "id": "1:5",
+            "name": "CTA button",
+            "type": "FRAME"
+          },
+          {
+            "id": "1:7",
+            "name": "Price card",
+            "type": "FRAME"
+          }
+        ]
+      },
+      "components": {},
+      "componentSets": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "1:3": {
+      "document": {
+        "id": "1:3",
+        "name": "Hero title",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "absoluteBoundingBox": {
+          "x": 148,
+          "y": 148,
+          "width": 507,
+          "height": 48
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "characters": "Найкращі пінгвіни в місті"
+      },
+      "components": {},
+      "componentSets": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "1:4": {
+      "document": {
+        "id": "1:4",
+        "name": "Hero subtitle",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "absoluteBoundingBox": {
+          "x": 148,
+          "y": 210,
+          "width": 420,
+          "height": 24
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "characters": "Живі, веселі й завжди вчасно"
+      },
+      "components": {},
+      "componentSets": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "1:5": {
+      "document": {
+        "id": "1:5",
+        "name": "CTA button",
+        "type": "FRAME",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "absoluteBoundingBox": {
+          "x": 148,
+          "y": 260,
+          "width": 160,
+          "height": 48
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "children": []
+      },
+      "components": {},
+      "componentSets": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "1:7": {
+      "document": {
+        "id": "1:7",
+        "name": "Price card",
+        "type": "FRAME",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "absoluteBoundingBox": {
+          "x": 148,
+          "y": 640,
+          "width": 320,
+          "height": 400
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "children": [
+          {
+            "id": "1:8",
+            "name": "Price",
+            "type": "TEXT"
+          }
+        ]
+      },
+      "components": {},
+      "componentSets": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "1:8": {
+      "document": {
+        "id": "1:8",
+        "name": "Price",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "absoluteBoundingBox": {
+          "x": 180,
+          "y": 700,
+          "width": 120,
+          "height": 40
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "characters": "$49"
+      },
+      "components": {},
+      "componentSets": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "1:9": null
+  }
+}

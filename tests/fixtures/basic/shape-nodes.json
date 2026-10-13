@@ -1,0 +1,89 @@
+{
+  "name": "Sandbox file",
+  "lastModified": "2026-10-13T16:50:12Z",
+  "thumbnailUrl": "https://example.invalid/thumbnails/sandbox.png",
+  "version": "2409894124987939141",
+  "role": "owner",
+  "editorType": "figma",
+  "linkAccess": "view",
+  "nodes": {
+    "1:3": {
+      "document": {
+        "id": "1:3",
+        "name": "Hero title",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "fills": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 0.0,
+              "g": 0.0,
+              "b": 0.0,
+              "a": 1.0
+            }
+          }
+        ],
+        "strokes": [],
+        "strokeWeight": 1.0,
+        "strokeAlign": "OUTSIDE",
+        "absoluteBoundingBox": {
+          "x": 148.0,
+          "y": 148.0,
+          "width": 507.0,
+          "height": 48.0
+        },
+        "absoluteRenderBounds": {
+          "x": 150.52841186523438,
+          "y": 156.24716186523438,
+          "width": 501.4666442871094,
+          "height": 38.934661865234375
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "layoutAlign": "INHERIT",
+        "layoutGrow": 0.0,
+        "layoutSizingHorizontal": "HUG",
+        "layoutSizingVertical": "HUG",
+        "characters": "Найкращі пінгвіни в місті",
+        "characterStyleOverrides": [],
+        "styleOverrideTable": {},
+        "lineTypes": [
+          "NONE"
+        ],
+        "lineIndentations": [
+          0
+        ],
+        "style": {
+          "fontFamily": "Inter",
+          "fontPostScriptName": null,
+          "fontStyle": "Bold",
+          "fontWeight": 700,
+          "textAutoResize": "WIDTH_AND_HEIGHT",
+          "fontSize": 40.0,
+          "textAlignHorizontal": "LEFT",
+          "textAlignVertical": "TOP",
+          "letterSpacing": 0.0,
+          "lineHeightPx": 48.409088134765625,
+          "lineHeightPercent": 100.0,
+          "lineHeightUnit": "INTRINSIC_%"
+        },
+        "layoutVersion": 5,
+        "effects": [],
+        "interactions": [],
+        "complexStrokeProperties": {
+          "strokeType": "BASIC"
+        }
+      },
+      "components": {},
+      "componentSets": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "999:999": null
+  }
+}
