@@ -1,0 +1,9 @@
+NOTES.md
+research/
+.figma-comments/
+__pycache__/
+*.pyc
+.DS_Store
+.mypy_cache/
+.ruff_cache/
+.superpowers/
