@@ -74,6 +74,36 @@ class NodesTest(unittest.TestCase):
         fake = FakeClient({"nodes": {}})
         self.assertEqual(FigmaAPI(fake).nodes(KEY, ["5:5"]), {"5:5": None})
 
+    def test_malformed_response_raises(self):
+        for resp in ("text", {}, {"nodes": []}, {"nodes": None}, [], None):
+            with self.assertRaisesRegex(ValueError, "unexpected response"):
+                FigmaAPI(FakeClient(resp)).nodes(KEY, ["1:3"])
+
+    def test_malformed_second_batch_raises(self):
+        ids = ["1:%d" % i for i in range(150)]
+
+        def responder(method, path, body, query):
+            if len(query["ids"].split(",")) == 100:
+                return {"nodes": {}}
+            return {}
+
+        with self.assertRaisesRegex(ValueError, "unexpected response"):
+            FigmaAPI(FakeClient(responder)).nodes(KEY, ids)
+
+    def test_entry_without_name_is_none(self):
+        fake = FakeClient(
+            {
+                "nodes": {
+                    "1:1": {},
+                    "1:2": {"document": {}},
+                    "1:3": {"document": {"name": None}},
+                    "1:4": None,
+                }
+            }
+        )
+        result = FigmaAPI(fake).nodes(KEY, ["1:1", "1:2", "1:3", "1:4", "1:5"])
+        self.assertEqual(result, {k: None for k in ["1:1", "1:2", "1:3", "1:4", "1:5"]})
+
     def test_empty_ids_makes_no_call(self):
         fake = FakeClient({})
         self.assertEqual(FigmaAPI(fake).nodes(KEY, []), {})
@@ -142,7 +172,7 @@ class WriteTest(unittest.TestCase):
 
 class QuotingTest(unittest.TestCase):
     def test_crafted_ids_cannot_change_path(self):
-        fake = FakeClient({})
+        fake = FakeClient({"nodes": {}})
         api = FigmaAPI(fake)
         api.react("k/../x", "c/../../me")
         api.delete("k?a=1", "c#frag")

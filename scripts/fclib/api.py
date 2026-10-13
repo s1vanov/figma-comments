@@ -45,7 +45,7 @@ class FigmaAPI:
             )
             found = data.get("nodes") if isinstance(data, dict) else None
             if not isinstance(found, dict):
-                found = {}
+                raise ValueError("unexpected response")
             for node_id in batch:
                 entry = found.get(node_id)
                 name = None
