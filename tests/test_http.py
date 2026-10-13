@@ -1,8 +1,10 @@
+import http.server
 import json
 import os
 import ssl
 import subprocess
 import sys
+import threading
 import unittest
 import urllib.error
 from unittest import mock
@@ -19,6 +21,7 @@ from fclib.http import (  # noqa: E402
     FallbackTransport,
     FigmaHTTPError,
     Response,
+    TransportError,
     UrllibTransport,
 )
 
@@ -66,6 +69,76 @@ class ClientTests(unittest.TestCase):
         c, _, sleeps = self.make([resp(429, b"", {"Retry-After": "soon"}), resp(200)])
         c.call("GET", "/v1/me")
         self.assertEqual(sleeps, [30])
+
+    def test_negative_retry_after_waits_30(self):
+        c, _, sleeps = self.make([resp(429, b"", {"Retry-After": "-5"}), resp(200)])
+        c.call("GET", "/v1/me")
+        self.assertEqual(sleeps, [30])
+
+    def test_retry_after_300_is_still_slept(self):
+        c, _, sleeps = self.make([resp(429, b"", {"Retry-After": "300"}), resp(200)])
+        c.call("GET", "/v1/me")
+        self.assertEqual(sleeps, [300])
+
+    def test_retry_after_over_300_raises_without_sleep(self):
+        c, t, sleeps = self.make([resp(429, b"", {"Retry-After": "301"}), resp(200)])
+        with self.assertRaises(FigmaHTTPError) as cm:
+            c.call("GET", "/v1/me")
+        self.assertEqual(cm.exception.status, 429)
+        self.assertEqual(
+            cm.exception.message,
+            "rate limited: Figma asks to wait 301 s; try again later",
+        )
+        self.assertEqual(sleeps, [])
+        self.assertEqual(len(t.calls), 1)
+
+    def test_token_trailing_whitespace_stripped(self):
+        t = FakeTransport([resp(200)])
+        Client("abc\n", t).call("GET", "/x")
+        self.assertEqual(t.calls[0][2]["X-Figma-Token"], "abc")
+
+    def test_token_trailing_newline_works_with_urllib_transport(self):
+        t = UrllibTransport()
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.status = 200
+        fake.read.return_value = b"{}"
+        fake.headers = {}
+        with mock.patch.object(t._opener, "open", return_value=fake) as op:
+            Client("abc\n", t).call("GET", "/x")
+        self.assertEqual(op.call_args[0][0].get_header("X-figma-token"), "abc")
+
+    def test_token_with_control_chars_rejected_without_echo(self):
+        for bad in ("ab\ncd", "ab\x00cd", "ab\x7fcd", "ab\tcd"):
+            with self.assertRaises(ValueError) as cm:
+                Client(bad, FakeTransport([]))
+            self.assertEqual(str(cm.exception), "invalid token: contains control characters")
+            self.assertNotIn("ab", repr(cm.exception.args))
+
+    def test_transport_exception_redacted(self):
+        class Boom:
+            def request(self, *a):
+                raise ValueError("Invalid header value b'%s'" % TOKEN)
+
+        c = Client(TOKEN, Boom())
+        with self.assertRaises(Exception) as cm:
+            c.call("GET", "/x")
+        self.assertNotIn(TOKEN, str(cm.exception))
+        self.assertNotIn(TOKEN, repr(cm.exception))
+        self.assertIn("***", str(cm.exception))
+        self.assertIsNone(cm.exception.__cause__)
+        self.assertTrue(cm.exception.__suppress_context__)
+
+    def test_transport_exception_without_token_unchanged(self):
+        err = TransportError("curl exited with 6: Could not resolve host")
+
+        class Boom:
+            def request(self, *a):
+                raise err
+
+        with self.assertRaises(TransportError) as cm:
+            Client(TOKEN, Boom()).call("GET", "/x")
+        self.assertIs(cm.exception, err)
 
     def test_gives_up_after_max_retries(self):
         c, t, _ = self.make([resp(429)] * 6)
@@ -272,27 +345,29 @@ class UrllibTransportTests(unittest.TestCase):
     def test_http_error_becomes_response(self):
         err = urllib.error.HTTPError("u", 429, "Too Many", {"Retry-After": "5"}, None)
         err.read = lambda: b"slow down"
-        with mock.patch("fclib.http.urllib.request.urlopen", side_effect=err):
-            r = UrllibTransport().request("GET", "https://h/x", {}, None)
+        t = UrllibTransport()
+        with mock.patch.object(t._opener, "open", side_effect=err):
+            r = t.request("GET", "https://h/x", {}, None)
         self.assertEqual(r.status, 429)
         self.assertEqual(r.body, b"slow down")
         self.assertEqual(r.headers["Retry-After"], "5")
 
     def test_cert_error_unwrapped_from_url_error(self):
         cert = ssl.SSLCertVerificationError("bad")
-        with mock.patch(
-            "fclib.http.urllib.request.urlopen", side_effect=urllib.error.URLError(cert)
+        t = UrllibTransport()
+        with mock.patch.object(
+            t._opener, "open", side_effect=urllib.error.URLError(cert)
         ):
             with self.assertRaises(ssl.SSLCertVerificationError):
-                UrllibTransport().request("GET", "https://h/x", {}, None)
+                t.request("GET", "https://h/x", {}, None)
 
     def test_other_url_error_propagates(self):
-        with mock.patch(
-            "fclib.http.urllib.request.urlopen",
-            side_effect=urllib.error.URLError("offline"),
+        t = UrllibTransport()
+        with mock.patch.object(
+            t._opener, "open", side_effect=urllib.error.URLError("offline")
         ):
             with self.assertRaises(urllib.error.URLError):
-                UrllibTransport().request("GET", "https://h/x", {}, None)
+                t.request("GET", "https://h/x", {}, None)
 
     def test_success_passes_timeout_and_body(self):
         fake = mock.MagicMock()
@@ -300,13 +375,61 @@ class UrllibTransportTests(unittest.TestCase):
         fake.status = 200
         fake.read.return_value = b"{}"
         fake.headers = {"A": "b"}
-        with mock.patch("fclib.http.urllib.request.urlopen", return_value=fake) as uo:
-            r = UrllibTransport().request("POST", "https://h/x", {"K": "v"}, b"{}")
-        req = uo.call_args[0][0]
+        t = UrllibTransport()
+        with mock.patch.object(t._opener, "open", return_value=fake) as op:
+            r = t.request("POST", "https://h/x", {"K": "v"}, b"{}")
+        req = op.call_args[0][0]
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(req.data, b"{}")
-        self.assertEqual(uo.call_args[1]["timeout"], 30)
+        self.assertEqual(op.call_args[1]["timeout"], 30)
         self.assertEqual(r.status, 200)
+
+    def test_redirect_is_not_followed(self):
+        hits = {"target": 0, "origin": 0}
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits["target"] += 1
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+        location = "http://127.0.0.1:%d/stolen" % target.server_address[1]
+
+        class Origin(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits["origin"] += 1
+                hits["token"] = self.headers.get("X-Figma-Token")
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        origin = http.server.HTTPServer(("127.0.0.1", 0), Origin)
+        for srv in (target, origin):
+            th = threading.Thread(target=srv.serve_forever, daemon=True)
+            th.start()
+        try:
+            r = UrllibTransport().request(
+                "GET",
+                "http://127.0.0.1:%d/x" % origin.server_address[1],
+                {"X-Figma-Token": TOKEN},
+                None,
+            )
+        finally:
+            for srv in (target, origin):
+                srv.shutdown()
+                srv.server_close()
+        self.assertEqual(r.status, 302)
+        self.assertEqual(hits["origin"], 1)
+        self.assertEqual(hits["target"], 0)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, Optional, Protocol
 BASE_URL = "https://api.figma.com"
 TIMEOUT = 30
 DEFAULT_RETRY_WAIT = 30
+MAX_RETRY_WAIT = 300  # never block an agent shell longer than this
 TOKEN_HEADER = "X-Figma-Token"
 ERROR_MESSAGE_LIMIT = 200
 
@@ -57,7 +58,18 @@ class FigmaHTTPError(Exception):
         return "HTTP %d: %s" % (self.status, self.message)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects, so the token is not forwarded to another host.
+    Returning None makes urllib surface the 3xx as an HTTPError."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore
+        return None
+
+
 class UrllibTransport:
+    def __init__(self) -> None:
+        self._opener = urllib.request.build_opener(_NoRedirect)
+
     def request(
         self,
         method: str,
@@ -67,7 +79,7 @@ class UrllibTransport:
     ) -> Response:
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with self._opener.open(req, timeout=TIMEOUT) as r:
                 return Response(r.status, dict(r.headers.items()), r.read())
         except urllib.error.HTTPError as e:
             return Response(e.code, dict(e.headers.items()) if e.headers else {}, e.read())
@@ -79,7 +91,8 @@ class UrllibTransport:
 
 class CurlTransport:
     """Shells out to curl. Headers go via stdin (``-H @-``), the body via a
-    temp file, so the token never appears in argv."""
+    temp file, so the token never appears in argv. Requires curl >= 7.55
+    (``-H @-``)."""
 
     def __init__(self, curl: str = "curl") -> None:
         self.curl = curl
@@ -182,6 +195,9 @@ class Client:
         sleep: Callable[[float], Any] = time.sleep,
         max_retries: int = 5,
     ) -> None:
+        token = token.strip()
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in token):
+            raise ValueError("invalid token: contains control characters")
         self._token = token
         self.transport = transport
         self.sleep = sleep
@@ -210,12 +226,26 @@ class Client:
 
         attempt = 0
         while True:
-            resp = self.transport.request(method, url, headers, data)
+            try:
+                resp = self.transport.request(method, url, headers, data)
+            except (ValueError, TransportError, OSError) as e:
+                if self._token and (
+                    self._token in str(e) or self._token in repr(e)
+                ):
+                    # `from None`: do not chain the original, it holds the token.
+                    raise TransportError(self._redact(str(e))) from None
+                raise
             if 200 <= resp.status < 300:
                 return _decode_success(resp.body)
             if resp.status == 429 and attempt < self.max_retries:
+                wait = _retry_wait(resp.headers)
+                if wait > MAX_RETRY_WAIT:
+                    raise FigmaHTTPError(
+                        429,
+                        "rate limited: Figma asks to wait %d s; try again later" % wait,
+                    )
                 attempt += 1
-                self.sleep(_retry_wait(resp.headers))
+                self.sleep(wait)
                 continue
             raise FigmaHTTPError(resp.status, self._error_message(resp.body))
 
@@ -234,18 +264,22 @@ class Client:
                     break
         if message is None:
             message = text
+        return self._redact(message)[:ERROR_MESSAGE_LIMIT]
+
+    def _redact(self, text: str) -> str:
         if self._token:
-            message = message.replace(self._token, "***")
-        return message[:ERROR_MESSAGE_LIMIT]
+            text = text.replace(self._token, "***")
+        return text
 
 
 def _retry_wait(headers: Dict[str, str]) -> int:
     for name, value in headers.items():
         if name.lower() == "retry-after":
             try:
-                return int(value.strip())
+                wait = int(value.strip())
             except (ValueError, AttributeError):
                 return DEFAULT_RETRY_WAIT
+            return wait if wait >= 0 else DEFAULT_RETRY_WAIT
     return DEFAULT_RETRY_WAIT
 
 
