@@ -96,7 +96,18 @@ class PublishBase(unittest.TestCase):
             transport = wrap(transport)
         return FigmaAPI(Client("replay-token", transport, sleep=lambda s: None))
 
-    def publish_now(self, fail=None, wrap=None):
+    def dry_run(self):
+        return publish(self.api(), self.round)
+
+    def publish_now(self, fail=None, wrap=None, between=None):
+        """Dry run (saves the plan), then the confirmed run, as the CLI does.
+
+        `between` changes Figma after the summary and before the confirmed run: that is what
+        the per-write preflight must catch.
+        """
+        self.dry_run()
+        if between is not None:
+            between()
         return publish(self.api(fail, wrap), self.round, confirm=confirm_code(self.round.read_bytes()))
 
     def writes(self):
@@ -326,8 +337,7 @@ class WriteTests(PublishBase):
             for c in cs:
                 if c["id"] in ("4200115", "4200116"):
                     c["resolved_at"] = AFTER
-        self.mutate_live(resolve)
-        report = self.publish_now()
+        report = self.publish_now(between=lambda: self.mutate_live(resolve))
         self.assertIsNone(report.error)
         self.assertEqual([(w["method"], w["path"]) for w in self.writes()],
                          [("POST", reactions_path("4200116"))])
@@ -335,22 +345,31 @@ class WriteTests(PublishBase):
                          [("4200115", "reply", SkipReason.RESOLVED), ("4200115", "react", SkipReason.RESOLVED)])
         self.assertIsNone(self.blocks()["4200115"].published_reply)
         self.assertTrue(self.blocks()["4200116"].reacted)
+        self.assertEqual([e.with_reply for e in report.skipped], [False, True])
+        self.assertEqual(report.ready_links, [])  # M-3: never a ready link for a resolved thread
+
+    def test_skipped_with_its_reply_wording(self):
+        self.edit(("4200115", "question", "reply+react", "Так."), ("4200116", "unclear", "reply", "Що?"))
+        self.mutate_live(lambda cs: [c.update(resolved_at=AFTER) for c in cs if c["id"] == "4200115"])
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertIn("4200115 · react · skipped with its reply (the thread is resolved", out)
 
     def test_client_wrote_after_collect_skipped(self):
         self.edit(("4200109", "edit", "reply", "Скоротили."), ("4200115", "question", "reply", "Так."))
-        self.add_reply("4200109", "client-1", text="А може й не треба")
-        report = self.publish_now()
+        report = self.publish_now(between=lambda: self.add_reply("4200109", "client-1", text="А може й не треба"))
         self.assertEqual([(e.root_id, e.reason) for e in report.skipped],
                          [("4200109", SkipReason.CLIENT_WROTE_AFTER_COLLECT)])
         self.assertEqual([w["body"]["comment_id"] for w in self.writes()], ["4200115"])
 
     def test_team_answered_after_collect_skipped(self):
         self.edit(("4200109", "edit", "reply", "Скоротили."), ("4200116", "unclear", "reply", "Що саме?"))
-        self.add_reply("4200109", "team-2", text="Вже відповів")
-        # two replies by the owner after collection: not "exactly one", so nothing is adopted
-        self.add_reply("4200116", OWNER, cid="4300002", text="one")
-        self.add_reply("4200116", OWNER, cid="4300003", text="two")
-        report = self.publish_now()
+        def answer():
+            self.add_reply("4200109", "team-2", text="Вже відповів")
+            # two replies by the owner after collection: not "exactly one", so nothing is adopted
+            self.add_reply("4200116", OWNER, cid="4300002", text="one")
+            self.add_reply("4200116", OWNER, cid="4300003", text="two")
+        report = self.publish_now(between=answer)
         self.assertEqual(self.writes(), [])
         self.assertEqual([(e.root_id, e.reason) for e in report.skipped],
                          [("4200109", SkipReason.TEAM_ANSWERED_AFTER_COLLECT),
@@ -359,8 +378,8 @@ class WriteTests(PublishBase):
 
     def test_thread_gone_skipped(self):
         self.edit(("4200109", "edit", "reply", "Скоротили."))
-        self.mutate_live(lambda cs: cs.remove(next(c for c in cs if c["id"] == "4200109")))
-        report = self.publish_now()
+        report = self.publish_now(
+            between=lambda: self.mutate_live(lambda cs: cs.remove(next(c for c in cs if c["id"] == "4200109"))))
         self.assertEqual([(e.root_id, e.reason) for e in report.skipped], [("4200109", SkipReason.THREAD_GONE)])
         self.assertEqual(self.writes(), [])
 
@@ -492,6 +511,7 @@ class ResumeTests(PublishBase):
         code, out, err = self.run_cli("publish", self.rel_round())
         self.assertEqual(code, 0, err)
         self.assertIn("Will be recorded without writing (1)", out)
+        self.assertIn("already in Figma (a lost answer or a reply written by hand)", out)
         self.assertIn("1 reply, 0 reactions", out)
         code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out))
         self.assertEqual(code, 0, err)
@@ -570,12 +590,113 @@ class ResumeTests(PublishBase):
                 return resp
 
         report = self.publish_now(wrap=Editor)
-        self.assertIn("changed during publish", report.error)
-        self.assertEqual(len(self.writes()), 1)
+        self.assertIn("edited during publish", report.error)
+        self.assertEqual(len(self.writes()), 1)  # stopped: nothing more from a changed file
         self.assertEqual(load_state(self.ws).rounds[0]["published"]["4200109"]["reply"], "9100001")
-        meta, blocks = parse_round(self.round.read_text(encoding="utf-8"))
+        text = self.round.read_text(encoding="utf-8")
+        self.assertTrue(text.endswith("\n\n"))  # the designer's edit is kept
+        self.assertEqual(self.blocks()["4200109"].published_reply, "9100001")  # and the marker added
+        meta, blocks = parse_round(text)
         plan = build_plan(blocks, load_state(self.ws), meta)
         self.assertEqual([i.root_id for i in plan], ["4200115"])  # not posted twice
+
+    def test_reply_recorded_only_in_state_is_not_resurrected_by_collect(self):
+        self.edit(("4200109", "edit", "reply+react", "Скоротили."))
+        with mock.patch("fclib.publish.mark_published", side_effect=ValueError("boom")):
+            report = self.publish_now()
+        self.assertIn("boom", report.error)
+        self.assertIsNone(self.blocks()["4200109"].published_reply)  # no marker in the file
+        self.assertEqual(load_state(self.ws).threads["4200109"].published_reply, "9100001")  # state has it
+        self.assertEqual(len(self.writes()), 1)
+
+        api, _ = api_for(self.replay)
+        result = collect(api, FileRef(KEY, None), self.cwd, NOW + timedelta(hours=3))
+        meta, blocks = parse_round(result.round_path.read_text(encoding="utf-8"))
+        block = next(b for b in blocks if b.root_id == "4200109")
+        self.assertEqual(block.reply, "")  # only the reaction is left, no draft to post again
+        self.assertEqual(load_state(self.ws).threads["4200109"].published_reply, "9100001")
+        text = set_block(result.round_path.read_text(encoding="utf-8"), "4200109", "edit", "react")
+        meta, blocks = parse_round(text)
+        self.assertEqual([(i.root_id, i.action) for i in build_plan(blocks, load_state(self.ws), meta)],
+                         [("4200109", "react")])
+
+
+# ---------------------------------------------------------------------------
+# the confirmed summary and the lock
+# ---------------------------------------------------------------------------
+
+class SummaryAndLockTests(PublishBase):
+    def test_confirm_without_a_saved_summary_refuses(self):
+        self.four_writes()
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", confirm_code(self.round.read_bytes()))
+        self.assertEqual(code, 2)
+        self.assertIn("run publish without --confirm first", err)
+        self.assertEqual(self.writes(), [])
+
+    def test_only_writes_listed_in_the_summary_are_made(self):
+        self.edit(("4200115", "question", "reply", "Так, з брендбука."), ("4200116", "unclear", "reply", "Що саме?"))
+        self.mutate_live(lambda cs: [c.update(resolved_at=AFTER) for c in cs if c["id"] == "4200115"])
+        _, out, _ = self.run_cli("publish", self.rel_round())
+        self.assertIn("1 reply, 0 reactions; skipped 1", out)
+        self.mutate_live(lambda cs: [c.update(resolved_at=None) for c in cs if c["id"] == "4200115"])  # reopened
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out))
+        self.assertEqual(code, 0, err)
+        self.assertEqual([w["body"]["comment_id"] for w in self.writes()], ["4200116"])
+        self.assertIn("4200115 · reply · not in the confirmed summary", out)
+        self.assertIsNone(self.blocks()["4200115"].published_reply)
+
+    def test_summary_file_is_saved_and_removed_after_a_complete_run(self):
+        self.edit(("4200116", "unclear", "reply", "Що саме?"))
+        report = self.dry_run()
+        plan_file = self.ws / ".plans" / ("%s.json" % report.code)
+        saved = json.loads(plan_file.read_text(encoding="utf-8"))
+        text = normalize_outgoing("Що саме?")
+        self.assertEqual(saved["items"], [{"root": "4200116", "action": "reply",
+                                           "hash": hashlib.sha256(text.encode("utf-8")).hexdigest()}])
+        publish(self.api(), self.round, confirm=report.code)
+        self.assertFalse(plan_file.exists())
+
+    def test_existing_lock_refuses_and_is_never_removed(self):
+        self.four_writes()
+        _, out, _ = self.run_cli("publish", self.rel_round())
+        lock = self.ws / ".publish.lock"
+        lock.write_text("pid 4242\nsince 2026-10-13T10:05:00Z\n", encoding="utf-8")
+        code, out2, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out))
+        self.assertEqual(code, 1)
+        self.assertIn("another publish or retract seems to be running (lock ", err)
+        self.assertIn("pid 4242, since 2026-10-13T10:05:00Z", err)
+        self.assertIn("delete the lock file and retry", err)
+        self.assertEqual(self.writes(), [])
+        self.assertTrue(lock.exists())
+        code, _, err = self.run_cli("retract", KEY, "4200105", "--confirm", "0000000000")
+        self.assertEqual(code, 1)
+        self.assertIn("another publish or retract", err)
+        self.assertEqual(self.writes(), [])
+
+    def test_lock_is_removed_after_a_run_even_one_that_failed(self):
+        self.four_writes()
+        self.publish_now(fail="1:500")
+        self.assertFalse((self.ws / ".publish.lock").exists())
+        self.publish_now()
+        self.assertFalse((self.ws / ".publish.lock").exists())
+
+    def test_lock_is_held_while_writing(self):
+        self.edit(("4200116", "unclear", "reply", "Що саме?"))
+        seen = []
+        ws = self.ws
+
+        class Probe:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def request(self, method, url, headers, body):
+                if method == "POST":
+                    seen.append((ws / ".publish.lock").read_text(encoding="utf-8"))
+                return self.inner.request(method, url, headers, body)
+
+        self.publish_now(wrap=Probe)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("pid %d" % os.getpid(), seen[0])
 
 
 # ---------------------------------------------------------------------------
@@ -587,7 +708,7 @@ class RetractTests(PublishBase):
         api = self.api()
         for cid, why in (("4200109", "starts a thread"), ("4200110", "someone else"), ("123", "not in this file")):
             with self.assertRaises(ValueError) as ctx:
-                retract(api, KEY, cid, confirm="anything")
+                retract(api, KEY, cid, confirm="anything", ws=self.ws)
             self.assertIn(why, str(ctx.exception))
         code, out, err = self.run_cli("retract", KEY, "4200109", "--confirm", "x")
         self.assertEqual(code, 1)
@@ -608,6 +729,18 @@ class RetractTests(PublishBase):
         self.assertEqual([(w["method"], w["path"]) for w in self.writes()],
                          [("DELETE", "/v1/files/%s/comments/4200105" % KEY)])
         self.assertFalse(any(c["id"] == "4200105" for c in self.live()["comments"]))
+        self.assertIn("deleted. Run collect: the thread comes back and you write the corrected reply there.", out)
+
+    def test_retract_clears_the_thread_state_but_not_the_marker(self):
+        self.edit(("4200109", "edit", "reply", "Скоротили."))
+        self.publish_now()
+        self.assertEqual(load_state(self.ws).threads["4200109"].published_reply, "9100001")
+        message = next(c["message"] for c in self.live()["comments"] if c["id"] == "9100001")
+        code, out, err = self.run_cli("retract", KEY, "9100001", "--confirm", retract_code("9100001", message))
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(load_state(self.ws).threads["4200109"].published_reply)
+        self.assertEqual(self.blocks()["4200109"].published_reply, "9100001")  # ruling: marker stays
+        self.assertFalse((self.ws / ".publish.lock").exists())
 
     def test_retract_code_binds_id_and_text(self):
         self.assertEqual(retract_code("5", "hi"), hashlib.sha256(b"5\nhi").hexdigest()[:10])

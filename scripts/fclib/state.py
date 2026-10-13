@@ -12,7 +12,7 @@ import re
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 KINDS = ("edit", "question", "unclear", "conflict", "out-of-scope", "confirmation", "duplicate")
 ACTIONS = ("reply", "react", "reply+react", "hold", "skip")
@@ -43,6 +43,35 @@ class ThreadState:
 class State:
     rounds: List[Dict[str, Any]] = field(default_factory=list)  # [{"n": int, "collected_at": str}]
     threads: Dict[str, ThreadState] = field(default_factory=dict)  # keyed by root comment id
+
+
+def round_published(entry: Optional[Dict[str, Any]]) -> Dict[str, Tuple[Optional[str], bool]]:
+    """What publish recorded for one round: root id -> (reply id or None, reacted).
+
+    publish keeps it in that round's entry as ``"published": {root: {"reply", "reacted"}}``.
+    It is the record of writes that really happened, so collect and publish both treat a
+    reply listed here as published even when the round file lacks its marker. Malformed
+    values are ignored (a reply id must be ASCII digits).
+    """
+    published = entry.get("published") if isinstance(entry, dict) else None
+    out: Dict[str, Tuple[Optional[str], bool]] = {}
+    if not isinstance(published, dict):
+        return out
+    for root, rec in published.items():
+        if not isinstance(rec, dict):
+            continue
+        reply = rec.get("reply")
+        ok = isinstance(reply, str) and reply.isascii() and reply.isdigit()
+        out[str(root)] = (reply if ok else None, rec.get("reacted") is True)
+    return out
+
+
+def find_round(state: State, n: int, collected_at: str) -> Optional[Dict[str, Any]]:
+    """The rounds entry with this number and collection time, or None."""
+    for entry in state.rounds:
+        if entry.get("n") == n and entry.get("collected_at") == collected_at:
+            return entry
+    return None
 
 
 def ensure_workspace(root: Path, file_key: str) -> Path:

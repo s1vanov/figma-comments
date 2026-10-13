@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 # Inline markers are removed only when they are paired and wrap non-space text.
@@ -13,7 +14,15 @@ _INLINE_PATTERNS = (
     re.compile(r"~~(?=\S)(.+?)(?<=\S)~~"),
 )
 _LINE_BREAK_RE = re.compile(r"\r\n|\r|\u2028|\u2029")
-_HAS_TEXT_RE = re.compile(r"\w")
+
+
+def _has_text(text: str) -> bool:
+    """A letter (L*), a digit (N*) or a symbol emoji (So). "_" and other punctuation are not text."""
+    for ch in text:
+        category = unicodedata.category(ch)
+        if category[0] in "LN" or category == "So":
+            return True
+    return False
 
 
 def normalize_outgoing(text: str) -> str:
@@ -23,7 +32,7 @@ def normalize_outgoing(text: str) -> str:
     paired emphasis markers are dropped, trailing whitespace on each line and
     leading/trailing blank lines are removed. Known side effect: "__init__" becomes
     "init", because paired double underscores are treated as bold markers.
-    Raises ValueError if nothing sendable (no letters or digits) remains.
+    Raises ValueError if nothing sendable remains: no letter, digit or symbol emoji.
     """
     text = _LINE_BREAK_RE.sub("\n", text)
     text = _LINK_RE.sub(r"\1 (\2)", text)
@@ -37,6 +46,6 @@ def normalize_outgoing(text: str) -> str:
         lines.pop()
     result = "\n".join(lines)
 
-    if not _HAS_TEXT_RE.search(result):
+    if not _has_text(result):
         raise ValueError("outgoing text is empty after normalization")
     return result

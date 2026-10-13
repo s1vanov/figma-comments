@@ -323,16 +323,17 @@ def _skip_lines(report: PublishReport) -> List[str]:
         return []
     lines = ["Skipped (%d); left for the next run or for you to look at:" % len(report.skipped)]
     for entry in report.skipped:
-        lines.append("  %s · %s · %s · %s" % (
-            _capped(entry.author), _clean(entry.root_id), entry.action,
-            REASON_TEXT[entry.reason] if entry.reason else "?"))
+        reason = REASON_TEXT[entry.reason] if entry.reason else "?"
+        if entry.with_reply:
+            reason = "skipped with its reply (%s)" % reason
+        lines.append("  %s · %s · %s · %s" % (_capped(entry.author), _clean(entry.root_id), entry.action, reason))
     return lines
 
 
 def _recovered_lines(report: PublishReport, done: bool) -> List[str]:
     if not report.recovered:
         return []
-    lines = ["%s (%d); already in Figma from an earlier run whose answer was lost, nothing is posted again:"
+    lines = ["%s (%d); already in Figma (a lost answer or a reply written by hand), nothing is posted again:"
              % ("Recorded without writing" if done else "Will be recorded without writing", len(report.recovered))]
     lines.extend(l for e in report.recovered for l in _entry_line(e))
     return lines
@@ -409,7 +410,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
 def cmd_retract(args: argparse.Namespace) -> int:
     ref = parse_file_ref(args.ref)
     try:
-        report = retract(_make_api(), ref.file_key, args.comment_id, confirm=args.confirm)
+        ws = ensure_workspace(Path.cwd(), ref.file_key) if args.confirm is not None else None
+        report = retract(_make_api(), ref.file_key, args.comment_id, confirm=args.confirm, ws=ws)
     except CodeMismatch as exc:
         print("error: %s" % _clean(exc), file=sys.stderr)
         return 2
@@ -417,10 +419,8 @@ def cmd_retract(args: argparse.Namespace) -> int:
         print("error: %s" % _clean(stop_message(exc, "retract")), file=sys.stderr)
         return 1
     if report.deleted:
-        _emit([
-            "Deleted your reply %s." % _clean(report.comment_id),
-            "The round file still shows it as published; collect reads Figma again next time.",
-        ])
+        _emit(["Reply %s deleted. Run collect: the thread comes back and you write the corrected reply there."
+               % _clean(report.comment_id)])
         return 0
     quoted = ["  > " + _clean(line) for line in report.message.splitlines()] or ["  > (empty)"]
     _emit(["Your reply %s will be deleted (this cannot be undone):" % _clean(report.comment_id)]

@@ -28,6 +28,17 @@ class NormalizeOutgoingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_outgoing("***")
 
+    def test_underscores_and_punctuation_are_empty(self):
+        # "has text" = a letter (L*), a digit (N*) or a symbol emoji (So); "_" is punctuation (Pc)
+        for empty in ("_", "* __ *", "___", "- . ,", "\u200b"):
+            with self.assertRaises(ValueError, msg=repr(empty)):
+                normalize_outgoing(empty)
+
+    def test_emoji_alone_is_text(self):
+        self.assertEqual(normalize_outgoing("\U0001F44D"), "\U0001F44D")
+        self.assertEqual(normalize_outgoing("\u2705"), "\u2705")
+        self.assertEqual(normalize_outgoing("\u0662"), "\u0662")  # a non-ASCII digit
+
 
 if __name__ == "__main__":
     unittest.main()

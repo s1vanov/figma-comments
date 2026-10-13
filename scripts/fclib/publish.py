@@ -2,18 +2,26 @@
 
 A posted reply cannot be edited, so everything here refuses by default (spec 4.2.6, 4.3, 6):
 
-* nothing is written without a confirm code. ``publish <file>`` prints the plan and
+* nothing is written without a confirmed summary. ``publish <file>`` prints the plan and
   ``confirm_code`` = the first 10 hex characters of sha256 over the EXACT bytes of the
-  round file; ``--confirm`` recomputes it from the current bytes, and a mismatch writes
-  nothing (``CodeMismatch``);
+  round file, and saves the listed writes to ``<ws>/.plans/<code>.json`` as
+  (root, action, sha256 of the exact text or "react"). ``--confirm`` recomputes the code
+  from the current bytes (mismatch: ``CodeMismatch``, no request), needs that saved
+  summary, and makes only the writes it lists; a write that would be planned now but was
+  not listed (a thread reopened since the summary) is skipped as NOT_IN_SUMMARY;
+* one writer at a time per workspace: ``<ws>/.publish.lock`` is created exclusively (pid and
+  UTC time inside) for a confirmed publish or retract and removed when it ends. An existing
+  lock refuses the run (``LockBusy``) and is never removed automatically;
 * before EVERY write the comments are read again and the thread is checked (``preflight``):
   a reply never goes into a resolved thread, nor into a thread where someone wrote after
   the round was collected;
-* after every successful write the round file gets its ``fc:published`` marker (atomic
-  replace) and ``state.json`` is saved, so a crash at any point leaves both telling what
-  was really posted. A write whose answer was lost (it went through, the response did
-  not arrive) is found on the next run and recorded instead of being posted twice:
-  exactly one reply by the token owner created after the round's collection time is
+* after every successful write ``state.json`` is saved first, then the round file gets its
+  ``fc:published`` marker (atomic replace), so a crash or a failed marker never loses the
+  record of a write that happened (collect and publish both honour the state record). If
+  the designer edited the file during the run, the marker goes into the edited text when it
+  still parses, and the run stops. A write whose answer was lost (it went through, the
+  response did not arrive) is found on the next run and recorded instead of being posted
+  twice: exactly one reply by the token owner created after the round's collection time is
   taken as ours; our own check mark created after it counts as our reaction;
 * the first API error stops the run; a write is never retried here (the HTTP client
   only waits out a 429 with ``Retry-After``, which means the request was not applied).
@@ -23,34 +31,41 @@ it reads, so a message in that same second may or may not have been seen; counti
 newer errs toward skipping. A message from anyone outside the team (client or an author
 not in participants.json) counts as "the client wrote".
 
-Per round, state.json also keeps ``rounds[i]["published"] = {root: {"reply", "reacted"}}``:
-``threads[root]`` alone cannot tell which round its published reply belongs to, and a
-thread that came back in a later round must still get that round's reply.
+Per round, state.json also keeps ``rounds[i]["published"] = {root: {"reply", "reacted"}}``
+(read with ``state.round_published``): ``threads[root]`` alone cannot tell which round its
+published reply belongs to, and a thread that came back in a later round must still get
+that round's reply.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import stat
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from .api import REACTION_EMOJI, FigmaAPI
 from .http import FigmaHTTPError, TransportError
 from .model import Participant, Thread, build_threads, parse_ts
 from .participants import load_participants
 from .roundfile import Block, RoundMeta, mark_published, parse_round
-from .state import State, ThreadState, load_state, save_state
+from .state import State, ThreadState, find_round, load_state, round_published, save_state
 from .text import normalize_outgoing
 from .urls import comment_link
 
 CODE_LEN = 10
 PARTICIPANTS_FILE = "participants.json"
+LOCK_NAME = ".publish.lock"
+PLANS_DIR = ".plans"
 _ID_CHARS = frozenset("0123456789")
+_CODE_RE = re.compile(r"[0-9a-f]{%d}" % CODE_LEN)
 
 
 class SkipReason(Enum):
@@ -58,6 +73,7 @@ class SkipReason(Enum):
     CLIENT_WROTE_AFTER_COLLECT = "client_wrote_after_collect"
     TEAM_ANSWERED_AFTER_COLLECT = "team_answered_after_collect"
     THREAD_GONE = "thread_gone"
+    NOT_IN_SUMMARY = "not_in_summary"
 
 
 REASON_TEXT = {
@@ -65,11 +81,16 @@ REASON_TEXT = {
     SkipReason.CLIENT_WROTE_AFTER_COLLECT: "the client wrote after the round was collected; the draft may be stale",
     SkipReason.TEAM_ANSWERED_AFTER_COLLECT: "someone from the team already answered after the round was collected",
     SkipReason.THREAD_GONE: "the thread no longer exists in Figma",
+    SkipReason.NOT_IN_SUMMARY: "not in the confirmed summary; run publish without --confirm to see it",
 }
 
 
 class CodeMismatch(Exception):
-    """The confirm code does not match what is there now. Nothing was written."""
+    """The confirm code (or its saved summary) does not match what is there now. Nothing was written."""
+
+
+class LockBusy(ValueError):
+    """Another publish or retract holds the workspace lock. Nothing was written."""
 
 
 class _Stop(Exception):
@@ -94,6 +115,7 @@ class Entry:
     text: Optional[str] = None
     comment_id: Optional[str] = None  # posted or recovered reply id
     reason: Optional[SkipReason] = None
+    with_reply: bool = False  # a reaction skipped because its block's reply was skipped
 
 
 @dataclass
@@ -120,7 +142,7 @@ class RetractReport:
 
 
 # ---------------------------------------------------------------------------
-# codes and messages
+# codes, messages, lock, saved summary
 # ---------------------------------------------------------------------------
 
 def confirm_code(file_bytes: bytes) -> str:
@@ -152,6 +174,76 @@ def stop_message(exc: BaseException, command: str) -> str:
     return "%s; stopped, nothing is retried automatically" % exc
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@contextmanager
+def workspace_lock(ws: Path) -> Iterator[Path]:
+    """Hold ``<ws>/.publish.lock`` (O_CREAT|O_EXCL) for one writing run; never break someone else's."""
+    path = Path(ws) / LOCK_NAME
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        pid, since = "?", "?"
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"pid (\S+)", content)
+            pid = m.group(1) if m else pid
+            m = re.search(r"since (\S+)", content)
+            since = m.group(1) if m else since
+        except OSError:
+            pass
+        raise LockBusy(
+            "another publish or retract seems to be running (lock %s, pid %s, since %s); "
+            "if none is running, delete the lock file and retry" % (path, pid, since)
+        ) from None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("pid %d\nsince %s\n" % (os.getpid(), _utc_now()))
+        yield path
+    finally:
+        try:
+            os.unlink(str(path))
+        except OSError:
+            pass
+
+
+def _item_key(root: str, action: str, text: Optional[str]) -> Tuple[str, str, str]:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest() if action == "reply" and text is not None else "react"
+    return root, action, digest
+
+
+def _plan_path(ws: Path, code: str) -> Path:
+    return Path(ws) / PLANS_DIR / ("%s.json" % code)
+
+
+def _save_summary(ws: Path, report: PublishReport) -> None:
+    items = [dict(zip(("root", "action", "hash"), _item_key(e.root_id, e.action, e.text))) for e in report.planned]
+    payload = {"code": report.code, "round": report.round_name, "items": items}
+    folder = Path(ws) / PLANS_DIR
+    folder.mkdir(exist_ok=True)
+    _atomic_write(_plan_path(ws, report.code), (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+
+
+def _load_summary(ws: Path, code: str) -> Set[Tuple[str, str, str]]:
+    missing = CodeMismatch("no saved summary for this code; run publish without --confirm first")
+    if not _CODE_RE.fullmatch(code):
+        raise missing
+    try:
+        data = json.loads(_plan_path(ws, code).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise missing from None
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list) or data.get("code") != code:
+        raise missing
+    out = set()
+    for item in items:
+        if isinstance(item, dict) and all(isinstance(item.get(k), str) for k in ("root", "action", "hash")):
+            out.add((item["root"], item["action"], item["hash"]))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # plan and preflight (pure)
 # ---------------------------------------------------------------------------
@@ -160,29 +252,16 @@ def _is_id(value: Any) -> bool:
     return isinstance(value, str) and bool(value) and all(ch in _ID_CHARS for ch in value)
 
 
-def _round_record(state: State, meta: Optional[RoundMeta]) -> Dict[str, Dict[str, Any]]:
-    """What state.json says this round already published: root -> {"reply", "reacted"}."""
+def _round_record(state: State, meta: Optional[RoundMeta]) -> Dict[str, Tuple[Optional[str], bool]]:
+    """What state.json says this round already published: root -> (reply id, reacted)."""
     if meta is None:
         return {}
-    for entry in state.rounds:
-        if entry.get("n") == meta.n and entry.get("collected_at") == meta.collected_at:
-            published = entry.get("published")
-            if not isinstance(published, dict):
-                return {}
-            out = {}
-            for root, rec in published.items():
-                if isinstance(rec, dict):
-                    out[str(root)] = {
-                        "reply": rec.get("reply") if _is_id(rec.get("reply")) else None,
-                        "reacted": rec.get("reacted") is True,
-                    }
-            return out
-    return {}
+    return round_published(find_round(state, meta.n, meta.collected_at))
 
 
-def _done_status(block: Block, record: Dict[str, Dict[str, Any]]) -> Tuple[Optional[str], bool]:
-    rec = record.get(block.root_id, {})
-    return block.published_reply or rec.get("reply"), block.reacted or bool(rec.get("reacted"))
+def _done_status(block: Block, record: Dict[str, Tuple[Optional[str], bool]]) -> Tuple[Optional[str], bool]:
+    reply_id, reacted = record.get(block.root_id, (None, False))
+    return block.published_reply or reply_id, block.reacted or reacted
 
 
 def build_plan(blocks: List[Block], state: State, meta: Optional[RoundMeta] = None) -> List[PlanItem]:
@@ -204,7 +283,7 @@ def build_plan(blocks: List[Block], state: State, meta: Optional[RoundMeta] = No
                 text = normalize_outgoing(block.reply)
             except ValueError:
                 raise ValueError(
-                    "block %s: the reply has no letters or digits once markup is removed; "
+                    "block %s: the reply has no letter, digit or emoji once markup is removed; "
                     "write the reply or change the action" % block.root_id
                 ) from None
             items.append(PlanItem(block.root_id, "reply", text, block.action, None, block.node_id))
@@ -309,7 +388,7 @@ def _author(thread: Optional[Thread], people: Dict[str, Participant], owner_id: 
 
 
 # ---------------------------------------------------------------------------
-# recording (file first, then state; both atomic)
+# recording (state first, then the round file; both atomic)
 # ---------------------------------------------------------------------------
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -336,7 +415,8 @@ class _Run:
     """Everything one publish run needs while it writes."""
 
     def __init__(self, api: FigmaAPI, path: Path, ws: Path, raw: bytes, text: str,
-                 meta: RoundMeta, blocks: Dict[str, Block], record: Dict[str, Dict[str, Any]]) -> None:
+                 meta: RoundMeta, blocks: Dict[str, Block],
+                 record: Dict[str, Tuple[Optional[str], bool]]) -> None:
         self.api = api
         self.path = path
         self.ws = ws
@@ -351,43 +431,50 @@ class _Run:
             self.status[root] = [reply_id, reacted]
 
     def record(self, root: str, reply_id: Optional[str] = None, reacted: Optional[bool] = None) -> None:
-        """Write the marker into the round file, then state.json. Called right after a write."""
+        """Called right after a write: state.json first (the record must survive), then the marker."""
         current = self.status[root]
         if reply_id is not None:
             current[0] = reply_id
         if reacted is not None:
             current[1] = reacted
-        problem = None
-        new_text = mark_published(self.text, root, current[0], current[1])
-        new_raw = new_text.encode("utf-8")
-        try:
-            on_disk: Optional[bytes] = self.path.read_bytes()
-        except OSError:
-            on_disk = None
-        if on_disk != self.raw:
-            problem = "%s was changed during publish, so its marker for %s was not written" % (self.path.name, root)
-        else:
-            try:
-                _atomic_write(self.path, new_raw)
-                self.raw, self.text = new_raw, new_text
-            except OSError as exc:
-                problem = "could not update %s (%s)" % (self.path.name, exc)
         self._save_state(self.blocks[root], current[0], current[1])
-        if problem:
-            raise _Stop("%s; state.json has the record. Stopped; run publish again to continue" % problem)
+
+        edited = False
+        try:
+            on_disk = self.path.read_bytes()
+            if on_disk == self.raw:
+                base = self.text
+            else:
+                edited = True
+                base = on_disk.decode("utf-8")
+            new_text = mark_published(base, root, current[0], current[1])  # ValueError if base is damaged
+            new_raw = new_text.encode("utf-8")
+            _atomic_write(self.path, new_raw)
+            self.raw, self.text = new_raw, new_text
+        except (OSError, ValueError) as exc:  # UnicodeDecodeError is a ValueError
+            raise _Stop(
+                "the reply/reaction for %s went out and state.json has the record, but its marker could "
+                "not be written into %s (%s). Stopped; run publish again to continue"
+                % (root, self.path.name, exc)
+            ) from None
+        if edited:
+            raise _Stop(
+                "%s was edited during publish; the marker for %s was added to the edited file and "
+                "state.json has the record. Stopped, so nothing else is posted from a changed file; "
+                "run publish again (without --confirm first)" % (self.path.name, root)
+            )
 
     def _save_state(self, block: Block, reply_id: Optional[str], reacted: bool) -> None:
         state = load_state(self.ws)  # fresh: never write back an older copy
         state.threads[block.root_id] = ThreadState(
             kind=block.kind, action=block.action, draft="", published_reply=reply_id, reacted=reacted,
         )
-        for entry in state.rounds:
-            if entry.get("n") == self.meta.n and entry.get("collected_at") == self.meta.collected_at:
-                published = entry.get("published")
-                if not isinstance(published, dict):
-                    published = entry["published"] = {}
-                published[block.root_id] = {"reply": reply_id, "reacted": reacted}
-                break
+        entry = find_round(state, self.meta.n, self.meta.collected_at)
+        if entry is not None:
+            published = entry.get("published")
+            if not isinstance(published, dict):
+                published = entry["published"] = {}
+            published[block.root_id] = {"reply": reply_id, "reacted": reacted}
         save_state(self.ws, state)
 
 
@@ -409,10 +496,10 @@ def _threads(api: FigmaAPI, key: str) -> Dict[str, Thread]:
 
 def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
             confirm: Optional[str] = None) -> PublishReport:
-    """Without `confirm`: a read-only dry run (plan, preflight, code). With it: write.
+    """Without `confirm`: a dry run (plan, preflight, code; saves the summary). With it: write.
 
-    Raises CodeMismatch (no request made), RoundParseError / ValueError for a file that
-    cannot be published (no write made). API errors do not raise: they stop the run and
+    Raises CodeMismatch (no request made), LockBusy, RoundParseError / ValueError for a file
+    that cannot be published (no write made). API errors do not raise: they stop the run and
     are in `report.error`, next to what was already done.
     """
     round_path = Path(round_path)
@@ -432,12 +519,32 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
         collected_at = parse_ts(meta.collected_at)
     except ValueError:
         raise ValueError("%s has an unreadable collection time" % round_path.name) from None
-    state = load_state(ws)
+    allowed = _load_summary(ws, code) if confirm is not None else None
+
+    if confirm is None:
+        report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, code, None)
+        if report.error is None and (report.planned or report.recovered):
+            _save_summary(ws, report)
+        return report
+    with workspace_lock(ws):
+        report = _publish(api, round_path, ws, raw, text, meta, blocks, collected_at, code, allowed)
+    if report.error is None:
+        try:
+            _plan_path(ws, code).unlink()
+        except OSError:
+            pass
+    return report
+
+
+def _publish(api: FigmaAPI, round_path: Path, ws: Path, raw: bytes, text: str, meta: RoundMeta,
+             blocks: List[Block], collected_at: datetime, code: str,
+             allowed: Optional[Set[Tuple[str, str, str]]]) -> PublishReport:
+    state = load_state(ws)  # read under the lock in a confirmed run
     record = _round_record(state, meta)
     items = build_plan(blocks, state, meta)
 
     report = PublishReport(round_name=round_path.name, file_key=meta.file_key, code=code,
-                           confirmed=confirm is not None)
+                           confirmed=allowed is not None)
     planned_roots = {i.root_id for i in items}
     for block in blocks:
         if block.action in ("hold", "skip"):
@@ -451,7 +558,7 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
     try:
         people = load_participants(str(ws / PARTICIPANTS_FILE))
         owner_id = _owner(api)
-        _walk(run, items, report, collected_at, people, owner_id, write=confirm is not None)
+        _walk(run, items, report, collected_at, people, owner_id, allowed)
     except (FigmaHTTPError, TransportError) as exc:
         report.error = stop_message(exc, "publish")
     except (_Stop, ValueError, OSError) as exc:
@@ -460,20 +567,30 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
 
 
 def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at: datetime,
-          people: Dict[str, Participant], owner_id: str, write: bool) -> None:
+          people: Dict[str, Participant], owner_id: str,
+          allowed: Optional[Set[Tuple[str, str, str]]]) -> None:
+    """Dry run when `allowed` is None; otherwise write, but only what the summary listed."""
+    write = allowed is not None
     key = run.meta.file_key
     skipped_blocks: Dict[str, Entry] = {}  # root -> the skipped reply of a reply+react block
     cached: Optional[Dict[str, Thread]] = None
 
-    def ready(root: str) -> None:  # collected as each reaction lands, so a stop keeps them
+    def ready(root: str, thread: Optional[Thread]) -> None:
+        """Collected as each reaction lands (so a stop keeps them); never for a resolved thread."""
+        if thread is not None and thread.root.get("resolved_at"):
+            return
         link = comment_link(key, run.blocks[root].node_id, root)
         if link not in report.ready_links:
             report.ready_links.append(link)
+
+    def listed(item: PlanItem) -> bool:
+        return allowed is None or _item_key(item.root_id, item.action, item.text) in allowed
+
     for item in items:
         root = item.root_id
         if item.action == "react" and root in skipped_blocks:
             first = skipped_blocks[root]  # the reply was skipped: the whole block waits
-            report.skipped.append(Entry(root, first.author, "react", reason=first.reason))
+            report.skipped.append(Entry(root, first.author, "react", reason=first.reason, with_reply=True))
             continue
         if write or cached is None:
             cached = _threads(run.api, key)  # fresh before EVERY write
@@ -482,14 +599,16 @@ def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at:
 
         if item.action == "reply":
             lost = find_lost_reply(thread, collected_at, owner_id)
-            if lost:
+            if lost:  # a fact, not a write: recorded whatever the summary said
                 if write:
                     run.record(root, reply_id=lost)
                 else:
                     run.status[root][0] = lost
                 report.recovered.append(Entry(root, author, "reply", comment_id=lost))
                 continue
-            reason = preflight(item, thread, collected_at, people, owner_id)
+            # the live reason first (more useful to show); either way nothing is posted
+            reason = preflight(item, thread, collected_at, people, owner_id) or \
+                (None if listed(item) else SkipReason.NOT_IN_SUMMARY)
             if reason:
                 entry = Entry(root, author, "reply", text=item.text, reason=reason)
                 skipped_blocks[root] = entry
@@ -506,8 +625,8 @@ def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at:
                     "recorded yet. Stopped; run publish again: it finds that reply and records it "
                     "instead of posting it twice" % root
                 )
-            run.record(root, reply_id=reply_id)
             report.published.append(Entry(root, author, "reply", text=item.text, comment_id=reply_id))
+            run.record(root, reply_id=reply_id)
             continue
 
         # reaction: our own reply of this block does not block it
@@ -515,10 +634,11 @@ def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at:
         if has_own_check(thread, collected_at, owner_id):
             if write:
                 run.record(root, reacted=True)
-                ready(root)
+                ready(root, thread)
             report.recovered.append(Entry(root, author, "react"))
             continue
-        reason = preflight(check_item, thread, collected_at, people, owner_id)
+        reason = preflight(check_item, thread, collected_at, people, owner_id) or \
+            (None if listed(item) else SkipReason.NOT_IN_SUMMARY)
         if reason:
             report.skipped.append(Entry(root, author, "react", reason=reason))
             continue
@@ -526,30 +646,45 @@ def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at:
             report.planned.append(Entry(root, author, "react"))
             continue
         run.api.react(key, root)
-        run.record(root, reacted=True)
         report.published.append(Entry(root, author, "react"))
-        ready(root)
+        ready(root, thread)
+        run.record(root, reacted=True)
 
 
 # ---------------------------------------------------------------------------
 # retract
 # ---------------------------------------------------------------------------
 
-def retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[str] = None) -> RetractReport:
+def retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[str] = None,
+            ws: Optional[Path] = None) -> RetractReport:
     """Delete one of the token owner's own replies, with the same code rule as publish.
 
     Every guard runs on fresh comments before any write; a root comment is never deleted
-    (that would remove the whole thread with the client's replies, spec 6.7).
+    (that would remove the whole thread with the client's replies, spec 6.7). A confirmed
+    retract holds the workspace lock (`ws` required then) and, when state.json lists the
+    deleted reply as its thread's published reply, clears that; the round file's marker
+    stays (it records what was posted in that round).
     """
     comment_id = comment_id.strip()
     if not comment_id:
         raise ValueError("comment id is empty")
+    if confirm is not None:
+        if ws is None:
+            raise ValueError("retract --confirm needs the workspace")
+        with workspace_lock(ws):
+            return _retract(api, file_key, comment_id, confirm, ws)
+    return _retract(api, file_key, comment_id, None, ws)
+
+
+def _retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[str],
+             ws: Optional[Path]) -> RetractReport:
     comments = api.comments(file_key)
     owner_id = _owner(api)
     target = next((c for c in comments if str(c.get("id")) == comment_id), None)
     if target is None:
         raise ValueError("comment %s is not in this file" % comment_id)
-    if not str(target.get("parent_id") or ""):
+    root = str(target.get("parent_id") or "")
+    if not root:
         raise ValueError(
             "comment %s starts a thread; retract deletes only replies (deleting a thread's "
             "first comment removes the whole thread, the client's replies included)" % comment_id
@@ -564,4 +699,10 @@ def retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[str
         raise CodeMismatch("the comment changed or the code is wrong; run retract without --confirm again")
     api.delete(file_key, comment_id)
     report.deleted = True
+    if ws is not None and (Path(ws) / "state.json").exists():
+        state = load_state(ws)
+        ts = state.threads.get(root)
+        if ts is not None and ts.published_reply == comment_id:
+            ts.published_reply = None
+            save_state(ws, state)
     return report

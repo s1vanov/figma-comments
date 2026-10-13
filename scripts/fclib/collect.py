@@ -12,6 +12,10 @@ Which threads become blocks (spec 4.2 and 5.3):
   in state with the time of that round's collection). State entries not covered by the
   file carry the same way (hold; reply or reply+react not published yet; react with a
   leftover draft). A carried thread that is closed now is not rendered, its entry stays;
+* what publish recorded for that round in state.json (``rounds[i]["published"]``) counts
+  as published even where the file lacks the marker (publish saves state before it marks
+  the file, and skips the marker when it cannot write it): a reply that really went out is
+  never turned back into a draft that could be posted twice;
 * excluded: closed threads, threads with an unknown author (their authors are reported),
   and skipped threads. A skip hides a thread only until a client writes after it was
   decided (`skipped_through`); then the thread returns as "client replied".
@@ -40,7 +44,15 @@ from .model import (
 )
 from .participants import load_participants
 from .roundfile import _NODE_RE, Block, RoundItem, RoundMeta, RoundParseError, parse_round, render_round
-from .state import WORKSPACE_DIR, State, ThreadState, ensure_workspace, load_state, save_state
+from .state import (
+    WORKSPACE_DIR,
+    State,
+    ThreadState,
+    ensure_workspace,
+    load_state,
+    round_published,
+    save_state,
+)
 from .urls import FileRef, comment_link
 
 NO_ELEMENT = "(no element)"
@@ -184,9 +196,10 @@ def _apply_block(state: State, block: Block, collected_at: str) -> str:
         )
         return "skip"
     if block.action == "hold":
-        if not (block.kind or block.reply.strip()):
+        if not (block.kind or block.reply.strip() or block.published_reply):
             return "none"
-        fate, draft = "carry", block.reply
+        # a reply that went out is not a draft any more, whatever the action says now
+        fate, draft = "carry", "" if block.published_reply else block.reply
     elif block.action == "reply":
         fate, draft = ("done", "") if block.published_reply else ("carry", block.reply)
     elif block.action == "reply+react":
@@ -295,8 +308,14 @@ def collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectRe
     collected_at = _utc_z(now)
     last_collected = state.rounds[-1]["collected_at"] if state.rounds else None
     carried_from, prev_blocks = _read_previous_round(ws, state, key)
+    prev_entry = next((r for r in state.rounds if r.get("n") == len(state.rounds)), None)
+    record = round_published(prev_entry)
     from_file = set()
     for block in prev_blocks:
+        if block.root_id in record:
+            reply_id, reacted = record[block.root_id]
+            block = replace(block, published_reply=block.published_reply or reply_id,
+                            reacted=block.reacted or reacted)
         if _apply_block(state, block, last_collected or collected_at) == "carry":
             from_file.add(block.root_id)
 
