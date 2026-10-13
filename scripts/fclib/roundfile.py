@@ -9,12 +9,17 @@ designer's token then publishes. The rules that rule this out:
   becomes ``>``). Lines are split exactly like ``str.splitlines`` (which also breaks on
   CR, VT, FF, FS/GS/RS, NEL, U+2028 and U+2029), so no line-break character of any kind
   survives inside a quoted line and later splits it into an unquoted one;
-* the parser ignores every line that starts with ``>`` (exact line start: a line with a
-  leading space is ordinary text), and recognises markers only on lines that start with
-  ``<!-- fc:``;
+* the parser ignores every ``>`` line between a block marker and its ``reply:`` line (exact
+  line start: a line with a leading space is ordinary text), and recognises markers only on
+  lines that start with ``<!-- fc:``;
 * the designer-editable region is strict: an unknown kind or action, a duplicate root id,
   a malformed marker, a stray line, or a reply action with no reply text raises
-  ``RoundParseError`` for the whole file instead of skipping a block.
+  ``RoundParseError`` for the whole file instead of skipping a block;
+* a block cannot vanish silently. Before the first block marker only blank lines, ``#``
+  lines, the round marker and the fixed hint lines are allowed. Inside reply text a line
+  starting with ``>``, ``kind:``, ``action:``, ``reply:`` or ``Link: https://www.figma.com/``
+  is an error (it is either dropped client text or the fields of a block whose heading and
+  marker were deleted), so such a leftover can never be swallowed into a neighbour's reply.
 
 Block syntax::
 
@@ -32,16 +37,18 @@ Block syntax::
     Shortened the title to three words.
 
 ``kind:`` and ``action:`` must come before ``reply:``; after ``reply:`` every line up to the
-next ``## `` heading, ``<!-- fc:`` marker or the end of the file is reply text (trailing
-blank lines are dropped, lines starting with ``>`` are ignored like everywhere else).
+next ``## `` heading, ``<!-- fc:`` marker or the end of the file is reply text (leading and
+trailing blank lines are dropped). Reply text only counts for the actions reply and
+reply+react; ``hold`` keeps it as a draft, ``react`` and ``skip`` must have none.
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
-from .state import ACTIONS, KINDS
+from .state import ACTIONS, FILE_KEY_PATTERN, FILE_KEY_RE, KINDS
 
 __all__ = [
     "ACTIONS",
@@ -62,16 +69,35 @@ _HEADING_PREFIX = "## "
 _DELETED_TITLE = "(element deleted)"
 _REPLY_ACTIONS = ("reply", "reply+react")
 
-# [0-9] (not \d) so that non-ASCII digits never match.
-_ID = r"[0-9A-Za-z_-]+"
+# [0-9] (not \d) so that non-ASCII digits never match. Figma comment ids are numeric
+# (e.g. 1964419410; observed on the live API 2026-10-13); "-" is the "no reply" sentinel.
+_ID = r"[0-9]+"
 _NODE = r"[0-9A-Za-z:;_.-]*"
-_ROUND_RE = re.compile(r"<!-- fc:round file=([0-9A-Za-z_-]{1,128}) n=([0-9]+) collected=([0-9A-Za-z:.+_-]+) -->")
+_ROUND_RE = re.compile(
+    r"<!-- fc:round file=(%s) n=([0-9]+) collected=([0-9A-Za-z:.+_-]+) -->" % FILE_KEY_PATTERN
+)
 _BLOCK_RE = re.compile(r"<!-- fc:block root=(%s) node=(%s) -->" % (_ID, _NODE))
-_PUBLISHED_RE = re.compile(r"<!-- fc:published reply=(%s) reacted=(yes|no) -->" % _ID)
+_PUBLISHED_RE = re.compile(r"<!-- fc:published reply=(%s|-) reacted=(yes|no) -->" % _ID)
 _ID_RE = re.compile(_ID)
 _NODE_RE = re.compile(_NODE)
-_FILE_KEY_RE = re.compile(r"[0-9A-Za-z_-]{1,128}")
 _COLLECTED_RE = re.compile(r"[0-9A-Za-z:.+_-]+")
+
+# Line breaks of str.splitlines(): the renderer and the parser must split identically.
+_BREAK_CHARS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+_BIDI_CONTROLS = frozenset(
+    [chr(c) for c in range(0x202A, 0x202F)] + [chr(c) for c in range(0x2066, 0x206A)]
+)
+# Reply text may not contain these at column 0: they are the fields of a block whose
+# heading/marker was deleted (or text that would be dropped).
+_REPLY_FORBIDDEN = ("kind:", "action:", "reply:", "Link: https://www.figma.com/", ">")
+
+_HINT_LINES = (
+    "Edit only the kind, action and reply fields of each block (the fields go before the reply text).",
+    "Lines starting with \">\" are the client's text and are ignored; reply text cannot contain such lines.",
+    "Kinds: " + ", ".join(KINDS),
+    "Actions: " + ", ".join(ACTIONS),
+)
 
 
 class RoundParseError(Exception):
@@ -134,9 +160,17 @@ def _check_fields(kind: str, action: str, reply: str) -> Optional[Tuple[str, str
             return "kind", "unknown kind %r (use one of: %s)" % (_clip(kind), ", ".join(KINDS))
     elif action not in ("hold", "skip"):
         return "kind", "kind is required unless the action is hold or skip"
-    if action in _REPLY_ACTIONS and not reply.strip():
+    has_text = _has_text(reply)
+    if action in _REPLY_ACTIONS and not has_text:
         return "reply", "action %s needs reply text" % action
+    if action in ("react", "skip") and has_text:
+        return "reply", "reply text is only published with reply or reply+react; clear it or use hold"
     return None
+
+
+def _has_text(s: str) -> bool:
+    """True if ``s`` has a character that is neither whitespace nor a format char (Cf)."""
+    return any(not ch.isspace() and unicodedata.category(ch) != "Cf" for ch in s)
 
 
 def _trim_blank_edges(lines: List[str]) -> List[str]:
@@ -152,27 +186,44 @@ def _trim_blank_edges(lines: List[str]) -> List[str]:
 # render
 # ---------------------------------------------------------------------------
 
+def _scrub(s: str) -> str:
+    """Make one line of untrusted text safe to show: no lone surrogates, no invisible controls.
+
+    Lone surrogates become U+FFFD. C0/C1 controls (except tab) and bidi controls become a
+    visible ``\\uXXXX`` escape. Line-break characters are NOT handled here: callers split first.
+    """
+    s = _SURROGATE_RE.sub("\ufffd", str(s))
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if (o < 0x20 and ch != "\t") or 0x7F <= o < 0xA0 or ch in _BIDI_CONTROLS:
+            out.append("\\u%04x" % o)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _inline(s: str) -> str:
     """Collapse a value that sits inside a single structural line.
 
-    Any control character (which covers CR, LF, VT, FF, FS/GS/RS, NEL) and every other
-    whitespace, including U+2028 and U+2029, becomes one space.
+    Every line-break character and other whitespace becomes one space; remaining control
+    and bidi characters become visible escapes.
     """
-    s = "".join(" " if ord(ch) < 32 or 0x7F <= ord(ch) < 0xA0 else ch for ch in str(s))
-    return " ".join(s.split())
+    s = "".join(" " if ch in _BREAK_CHARS else ch for ch in str(s))
+    return " ".join(_scrub(s).split())
 
 
 def _quote(text: str) -> List[str]:
     out = []
     for line in str(text).splitlines():
-        line = line.rstrip()
+        line = _scrub(line).rstrip()
         out.append("> " + line if line else ">")
     return out
 
 
 def render_round(meta: RoundMeta, items: List[RoundItem]) -> str:
     """Render the round file. Raises ValueError for anything that could not be parsed back."""
-    if not _FILE_KEY_RE.fullmatch(str(meta.file_key)):
+    if not FILE_KEY_RE.fullmatch(str(meta.file_key)):
         raise ValueError("invalid file key in round meta")
     if type(meta.n) is not int or meta.n < 0:
         raise ValueError("round number must be a non-negative integer")
@@ -183,10 +234,7 @@ def render_round(meta: RoundMeta, items: List[RoundItem]) -> str:
         "# Round %02d · collected %s" % (meta.n, meta.collected_at),
         "<!-- fc:round file=%s n=%d collected=%s -->" % (meta.file_key, meta.n, meta.collected_at),
         "",
-        "Edit only the kind, action and reply fields of each block (the fields go before the reply text).",
-        "A line that starts with \">\" is the client's text and is ignored.",
-        "Kinds: " + ", ".join(KINDS),
-        "Actions: " + ", ".join(ACTIONS),
+        *_HINT_LINES,
         "",
     ]
     seen = set()
@@ -199,9 +247,9 @@ def render_round(meta: RoundMeta, items: List[RoundItem]) -> str:
         node_id = it.node_id or ""
         if not _NODE_RE.fullmatch(node_id):
             raise ValueError("invalid node id %r" % _clip(node_id))
-        reply_lines = _trim_blank_edges(str(it.reply).splitlines())
+        reply_lines = _trim_blank_edges(_SURROGATE_RE.sub("\ufffd", str(it.reply)).splitlines())
         for rl in reply_lines:
-            if rl.startswith(">") or rl.startswith(_HEADING_PREFIX) or rl.startswith(_MARKER_PREFIX):
+            if rl.startswith(_REPLY_FORBIDDEN) or rl.startswith(_HEADING_PREFIX) or rl.startswith(_MARKER_PREFIX):
                 raise ValueError(
                     "reply text of %s has a line that would be read as structure: %r" % (it.root_id, _clip(rl))
                 )
@@ -309,6 +357,12 @@ def parse_round(text: str) -> Tuple[RoundMeta, List[Block]]:
         i += 1
 
         if line.startswith(">"):
+            if cur is None:
+                raise RoundParseError(
+                    "quoted client text outside any block (a block heading and marker were deleted?)", ln
+                )
+            if cur.in_reply:
+                raise RoundParseError("reply text cannot contain a line starting with '>'", ln)
             continue
 
         if line.startswith(_MARKER_PREFIX):
@@ -354,9 +408,20 @@ def parse_round(text: str) -> Tuple[RoundMeta, List[Block]]:
             continue
 
         if cur is None:
-            continue  # preamble text
+            # Only reachable before the first block marker.
+            if not line.strip() or line.startswith("#") or line.rstrip() in _HINT_LINES:
+                continue
+            raise RoundParseError(
+                "unexpected text before the first block (if a block's heading and marker were "
+                "deleted, restore them or delete the whole block)",
+                ln,
+            )
 
         if cur.in_reply:
+            if line.startswith(_REPLY_FORBIDDEN):
+                raise RoundParseError(
+                    "looks like the fields of a block whose heading/marker was deleted", ln
+                )
             cur.reply_lines.append(line)
             continue
 
@@ -404,16 +469,24 @@ def mark_published(text: str, root_id: str, reply_id: Optional[str], reacted: bo
     """Put exactly one ``fc:published`` line right after the block marker of ``root_id``.
 
     Idempotent. Keeps the BOM and the file's own line endings. Only unquoted lines count,
-    so a marker that a client quoted into a message is never a target.
+    so a marker that a client quoted into a message is never a target. The file must parse
+    before and after, and nothing but the target block's published state may change;
+    otherwise ValueError (the caller must not write the result).
     """
     if not _ID_RE.fullmatch(str(root_id)):
         raise ValueError("invalid root comment id")
-    if reply_id is not None and (not _ID_RE.fullmatch(str(reply_id)) or reply_id == "-"):
+    if reply_id is not None and not _ID_RE.fullmatch(str(reply_id)):
         raise ValueError("invalid reply id")
+    try:
+        meta_before, blocks_before = parse_round(text)
+    except RoundParseError as exc:
+        raise ValueError("round file does not parse: %s" % exc) from None
+    if sum(1 for b in blocks_before if b.root_id == root_id) != 1:
+        raise ValueError("no block with root id %s" % root_id)
 
     bom = ""
-    if text.startswith("﻿"):
-        bom, text = "﻿", text[1:]
+    if text.startswith("\ufeff"):
+        bom, text = "\ufeff", text[1:]
     lines = text.splitlines(keepends=True)
 
     targets = []
@@ -424,10 +497,8 @@ def mark_published(text: str, root_id: str, reply_id: Optional[str], reacted: bo
         m = _BLOCK_RE.fullmatch(content.rstrip())
         if m and m.group(1) == root_id:
             targets.append(idx)
-    if not targets:
-        raise ValueError("no block with root id %s" % root_id)
-    if len(targets) > 1:
-        raise ValueError("root id %s appears in more than one block" % root_id)
+    if len(targets) != 1:
+        raise ValueError("cannot locate the block marker of root id %s" % root_id)
 
     idx = targets[0]
     marker = "<!-- fc:published reply=%s reacted=%s -->" % (
@@ -443,4 +514,17 @@ def mark_published(text: str, root_id: str, reply_id: Optional[str], reacted: bo
     else:  # the block marker is the very last line and has no line break
         lines[idx] = lines[idx] + "\n"
         lines.insert(idx + 1, marker)
-    return bom + "".join(lines)
+    result = bom + "".join(lines)
+
+    try:
+        meta_after, blocks_after = parse_round(result)
+    except RoundParseError as exc:
+        raise ValueError("marking the block would corrupt the file: %s" % exc) from None
+    expected = [
+        replace(b, published_reply=reply_id, reacted=reacted) if b.root_id == root_id else b
+        for b in blocks_before
+    ]
+    # parse_round guarantees at most one fc:published line, directly after its block marker.
+    if meta_after != meta_before or blocks_after != expected:
+        raise ValueError("marking the block changed more than its published state")
+    return result

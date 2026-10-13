@@ -140,6 +140,15 @@ class RenderTests(unittest.TestCase):
             item(reply="ok\n## sneaky"),
             item(reply="ok\n<!-- fc:block root=9 node= -->"),
             item(reply="ok\n> quoted"),
+            item(reply="ok\nkind: edit"),
+            item(reply="ok\naction: hold"),
+            item(reply="ok\nreply: more"),
+            item(reply="ok\nLink: https://www.figma.com/design/x"),
+            item(kind="edit", action="react", reply="stray text"),
+            item(kind="duplicate", action="skip", reply="stray text"),
+            item(kind="edit", action="reply", reply="\u200b\u200d \ufeff"),
+            item(root_id="abc"),
+            item(root_id="-"),
         ]
         for it in bad:
             with self.assertRaises(ValueError, msg=repr(it)):
@@ -157,7 +166,7 @@ class RenderTests(unittest.TestCase):
 class RoundtripTests(unittest.TestCase):
     def test_roundtrip(self):
         items = [
-            item("100", kind="edit", action="reply", reply="First line.\n\nSecond: line\nkind: not a field here"),
+            item("100", kind="edit", action="reply", reply="First line.\n\nSecond: line\n kind: leading space is text"),
             item("101", kind="question", action="reply+react", reply="Answer."),
             item("102", kind="confirmation", action="react"),
             item("103", kind="", action="hold", reply="draft in progress"),
@@ -170,7 +179,7 @@ class RoundtripTests(unittest.TestCase):
         self.assertEqual(
             [(b.root_id, b.node_id, b.kind, b.action, b.reply) for b in blocks],
             [
-                ("100", "1:3", "edit", "reply", "First line.\n\nSecond: line\nkind: not a field here"),
+                ("100", "1:3", "edit", "reply", "First line.\n\nSecond: line\n kind: leading space is text"),
                 ("101", "1:3", "question", "reply+react", "Answer."),
                 ("102", "1:3", "confirmation", "react", ""),
                 ("103", "1:3", "", "hold", "draft in progress"),
@@ -190,15 +199,15 @@ class RoundtripTests(unittest.TestCase):
     def test_example_from_the_brief(self):
         text = (
             "# Round 02 · collected 2026-10-13T18:00:00Z\n"
-            "<!-- fc:round file=KEY n=2 collected=2026-10-13T18:00:00Z -->\n\n"
+            "<!-- fc:round file=%s n=2 collected=2026-10-13T18:00:00Z -->\n\n"
             "## 3. Hero title · Olena (client) · new\n"
             "<!-- fc:block root=1964419410 node=1:3 -->\n"
             "Link: https://www.figma.com/design/KEY/?node-id=1-3#1964419410\n\n"
             "> Olena · 2026-10-13 16:53\n> make the title shorter\n\n"
             "kind: edit\naction: reply\nreply:\nShortened the title to three words.\n"
-        )
+        ) % KEY
         meta, blocks = parse_round(text)
-        self.assertEqual((meta.file_key, meta.n, meta.collected_at), ("KEY", 2, "2026-10-13T18:00:00Z"))
+        self.assertEqual((meta.file_key, meta.n, meta.collected_at), (KEY, 2, "2026-10-13T18:00:00Z"))
         self.assertEqual(blocks[0].reply, "Shortened the title to three words.")
 
     def test_inline_reply_text_accepted(self):
@@ -219,19 +228,17 @@ class RoundtripTests(unittest.TestCase):
         _, blocks = parse_round(text)
         self.assertEqual([b.reply for b in blocks], ["one", "two"])
 
-    def test_fields_after_reply_belong_to_reply(self):
-        text = render_round(META, [item(kind="edit", action="hold", reply="x")])
-        text = text.rstrip("\n") + "\nkind: question\naction: reply\n"
-        _, blocks = parse_round(text)
-        self.assertEqual(blocks[0].kind, "edit")
-        self.assertEqual(blocks[0].action, "hold")
-        self.assertEqual(blocks[0].reply, "x\nkind: question\naction: reply")
-
     def test_leading_space_gt_line_is_reply_text(self):
         text = render_round(META, [item(kind="edit", action="reply", reply="a")])
-        text = text.rstrip("\n") + "\n > not a quote\n>real quote\nb\n"
+        text = text.rstrip("\n") + "\n > not a quote\nb\n"
         _, blocks = parse_round(text)
         self.assertEqual(blocks[0].reply, "a\n > not a quote\nb")
+
+    def test_indented_field_words_are_reply_text(self):
+        text = render_round(META, [item(kind="edit", action="reply", reply="a")])
+        text = text.rstrip("\n") + "\n kind: x\n  reply: y\nLinks: z\n"
+        _, blocks = parse_round(text)
+        self.assertEqual(blocks[0].reply, "a\n kind: x\n  reply: y\nLinks: z")
 
     def test_gt_lines_in_field_area_ignored(self):
         text = render_round(META, [item(kind="edit", action="reply", reply="a")])
@@ -353,11 +360,11 @@ class ParseErrorTests(unittest.TestCase):
 
     def test_empty_kind_only_for_hold_or_skip(self):
         for action in ("reply", "react", "reply+react"):
-            text = self.base(kind="edit", action=action, reply="ok")
+            text = self.base(kind="edit", action=action, reply="ok" if action != "react" else "")
             text = edit_field(text, "kind: edit", "kind:")
             self.assertParseError(text, line_of(text, "kind:"))
         for action in ("hold", "skip"):
-            text = edit_field(self.base(action=action), "kind: edit", "kind:")
+            text = edit_field(self.base(action=action, reply=""), "kind: edit", "kind:")
             _, blocks = parse_round(text)
             self.assertEqual(blocks[0].kind, "")
 
@@ -473,6 +480,206 @@ class ParseErrorTests(unittest.TestCase):
         i = text.rindex("kind: edit")
         text = text[:i] + "kind: nope" + text[i + len("kind: edit"):]
         self.assertParseError(text)
+
+
+class DeletedBlockAndReplyRuleTests(unittest.TestCase):
+    """Designer edits must never make a block vanish silently or swallow its neighbour."""
+
+    def two(self, **kw):
+        return render_round(META, [item("1", **kw), item("2", messages=[("Taras", "t", "second thread")])])
+
+    def drop_heading_and_marker(self, text, root, number):
+        heading = [ln for ln in text.split("\n") if ln.startswith("## %d. " % number)]
+        self.assertEqual(len(heading), 1)
+        marker = [ln for ln in text.split("\n") if ln.startswith("<!-- fc:block root=%s " % root)]
+        return text.replace(heading[0] + "\n", "", 1).replace(marker[0] + "\n", "", 1)
+
+    def test_gt_line_in_reply_is_an_error(self):
+        text = render_round(META, [item(kind="edit", action="hold", reply="As you wrote:")])
+        text = text.rstrip("\n") + "\n> make it pop\nwe did it.\n"
+        with self.assertRaises(RoundParseError) as cm:
+            parse_round(text)
+        self.assertEqual(cm.exception.line, line_of(text, "> make it pop"))
+        self.assertIn("'>'", cm.exception.message)
+
+    def test_render_refuses_gt_line_in_reply(self):
+        with self.assertRaises(ValueError):
+            render_round(META, [item(kind="edit", action="reply", reply="As you wrote:\n> make it pop\nwe did it.")])
+
+    def test_d2_block_heading_and_marker_deleted(self):
+        text = self.drop_heading_and_marker(self.two(kind="edit", action="reply", reply="Done."), "2", 2)
+        with self.assertRaises(RoundParseError) as cm:
+            parse_round(text)
+        self.assertIn("heading/marker was deleted", cm.exception.message)
+        links = [i for i, ln in enumerate(text.split("\n"), 1) if ln.startswith("Link: https://www.figma.com/")]
+        self.assertEqual(cm.exception.line, links[-1])  # block 2's orphaned Link line
+
+    def test_d2_with_hold_block_is_also_refused(self):
+        text = self.drop_heading_and_marker(self.two(), "2", 2)
+        with self.assertRaises(RoundParseError):
+            parse_round(text)
+
+    def test_d5_first_block_heading_and_marker_deleted(self):
+        text = self.drop_heading_and_marker(self.two(), "1", 1)
+        with self.assertRaises(RoundParseError) as cm:
+            parse_round(text)
+        self.assertEqual(cm.exception.line, line_of(text, "Link: https://www.figma.com/"))
+
+    def test_d5_with_gt_lines_first(self):
+        text = self.drop_heading_and_marker(self.two(), "1", 1)
+        text = text.replace("Link: https://www.figma.com/design/%s/?node-id=1-3#1\n" % KEY, "", 1)
+        with self.assertRaises(RoundParseError) as cm:
+            parse_round(text)
+        self.assertEqual(cm.exception.line, line_of(text, "> Olena"))
+
+    def test_preamble_allows_hint_title_and_blank_only(self):
+        text = render_round(META, [item()])
+        _, blocks = parse_round(text)
+        self.assertEqual(len(blocks), 1)
+        for extra in ("kind: edit", "action: reply", "reply:", "Link: https://x", "> quoted", "some note"):
+            bad = edit_field(text, "\n\n## 1.", "\n" + extra + "\n\n## 1.")
+            with self.assertRaises(RoundParseError, msg=extra):
+                parse_round(bad)
+
+    def test_edited_hint_line_is_refused_but_deleted_hint_is_fine(self):
+        text = render_round(META, [item()])
+        hint = [ln for ln in text.split("\n") if ln.startswith("Kinds: ")][0]
+        parse_round(text.replace(hint + "\n", ""))
+        with self.assertRaises(RoundParseError):
+            parse_round(text.replace(hint, hint + " plus mine"))
+
+    def test_field_words_at_column_zero_in_reply_are_errors(self):
+        for extra in ("kind: question", "action: reply", "reply: again", "Link: https://www.figma.com/design/x"):
+            text = render_round(META, [item(kind="edit", action="hold", reply="x")])
+            text = text.rstrip("\n") + "\n" + extra + "\n"
+            with self.assertRaises(RoundParseError, msg=extra) as cm:
+                parse_round(text)
+            self.assertEqual(cm.exception.line, line_of(text, extra))
+
+    def test_link_with_other_prefix_is_reply_text(self):
+        text = render_round(META, [item(kind="edit", action="hold", reply="x")])
+        text = text.rstrip("\n") + "\nLink: https://example.com/\n"
+        _, blocks = parse_round(text)
+        self.assertEqual(blocks[0].reply, "x\nLink: https://example.com/")
+
+    def test_zero_width_only_reply_is_empty(self):
+        text = render_round(META, [item(kind="edit", action="hold")])
+        text = edit_field(text, "action: hold", "action: reply")
+        text = text.rstrip("\n") + "\n\u200b\u200d\n\ufeff\n"
+        with self.assertRaises(RoundParseError) as cm:
+            parse_round(text)
+        self.assertIn("needs reply text", cm.exception.message)
+
+    def test_react_and_skip_with_reply_text_are_refused_hold_keeps_draft(self):
+        for action in ("react", "skip"):
+            text = render_round(META, [item(kind="edit", action="hold", reply="draft")])
+            text = edit_field(text, "action: hold", "action: " + action)
+            with self.assertRaises(RoundParseError, msg=action) as cm:
+                parse_round(text)
+            self.assertIn("only published with reply or reply+react", cm.exception.message)
+            self.assertEqual(cm.exception.line, line_of(text, "reply:"))
+        _, blocks = parse_round(render_round(META, [item(kind="edit", action="hold", reply="draft")]))
+        self.assertEqual(blocks[0].reply, "draft")
+
+    def test_react_with_zero_width_reply_is_fine(self):
+        text = render_round(META, [item(kind="edit", action="react")])
+        text = text.rstrip("\n") + "\n\u200b\n"
+        _, blocks = parse_round(text)
+        self.assertEqual(blocks[0].action, "react")
+
+
+class IdAndKeyTests(unittest.TestCase):
+    def test_non_numeric_ids_are_rejected_by_parser(self):
+        base = render_round(META, [item("1")])
+        for bad in ("<!-- fc:block root=abc node=1:3 -->", "<!-- fc:block root=-1 node=1:3 -->",
+                    "<!-- fc:block root=\u0661 node=1:3 -->"):
+            with self.assertRaises(RoundParseError):
+                parse_round(edit_field(base, "<!-- fc:block root=1 node=1:3 -->", bad))
+        for bad in ("reply=abc", "reply=-1", "reply="):
+            text = edit_field(base, "<!-- fc:block root=1 node=1:3 -->\n",
+                              "<!-- fc:block root=1 node=1:3 -->\n<!-- fc:published %s reacted=yes -->\n" % bad)
+            with self.assertRaises(RoundParseError, msg=bad):
+                parse_round(text)
+
+    def test_dash_means_no_reply(self):
+        base = render_round(META, [item("1")])
+        text = edit_field(base, "<!-- fc:block root=1 node=1:3 -->\n",
+                          "<!-- fc:block root=1 node=1:3 -->\n<!-- fc:published reply=- reacted=yes -->\n")
+        _, blocks = parse_round(text)
+        self.assertEqual((blocks[0].published_reply, blocks[0].reacted), (None, True))
+
+    def test_round_marker_uses_the_shared_file_key_rule(self):
+        base = render_round(META, [item("1")])
+        for bad in ("file=KEY", "file=" + "a" * 21, "file=" + "a" * 129, "file=" + KEY[:-1] + "-"):
+            text = edit_field(base, "file=" + KEY, bad)
+            with self.assertRaises(RoundParseError, msg=bad):
+                parse_round(text)
+        for key in ("short", "a" * 21, KEY[:-1] + "-"):
+            with self.assertRaises(ValueError, msg=key):
+                render_round(RoundMeta(file_key=key, n=1, collected_at="x"), [])
+        render_round(RoundMeta(file_key="a" * 22, n=1, collected_at="x"), [])
+
+
+class SanitizeTests(unittest.TestCase):
+    def test_controls_and_bidi_become_visible_escapes(self):
+        evil = "a\x00b\x07c\x7fd\x9fe\u202ef\u2066g\u2069h\ti"
+        out = render_round(META, [item(messages=[("Ol\x00ena\u202e", "t\x07", evil)], node_name="N\u202ame")])
+        for ch in "\x00\x07\x7f\x9f\u202e\u2066\u2069\u202a":
+            self.assertNotIn(ch, out)
+        self.assertIn("> a\\u0000b\\u0007c\\u007fd\\u009fe\\u202ef\\u2066g\\u2069h\ti", out)
+        self.assertIn("## 1. N\\u202ame \u00b7 Olena (client) \u00b7 new", out)
+        parse_round(out)
+
+    def test_lone_surrogates_become_replacement_char(self):
+        out = render_round(META, [item(messages=[("Ol\ud800ena", "t", "x\udc00y")], node_name="n\udfffm")])
+        out.encode("utf-8")  # would raise on a lone surrogate
+        self.assertIn("> x\ufffdy", out)
+        self.assertIn("Ol\ufffdena", out)
+        self.assertIn("n\ufffdm", out)
+        out2 = render_round(META, [item(kind="edit", action="reply", reply="a\ud800b")])
+        out2.encode("utf-8")
+        self.assertEqual(parse_round(out2)[1][0].reply, "a\ufffdb")
+
+    def test_escape_does_not_alter_line_splitting(self):
+        # a client line made only of controls must still be a quoted line, never vanish or merge
+        out = render_round(META, [item(messages=[("O", "t", "\x00\n\x01")])])
+        self.assertIn("> \\u0000\n> \\u0001\n", out)
+
+
+class MarkPublishedGuardTests(unittest.TestCase):
+    def sample(self):
+        return render_round(META, [item("100", kind="edit", action="reply", reply="Done."), item("101")])
+
+    def test_unparseable_input_is_refused(self):
+        broken = edit_field(self.sample(), "kind: edit", "kind: bug")
+        with self.assertRaises(ValueError):
+            mark_published(broken, "100", "1", True)
+
+    def test_only_target_changes(self):
+        base = self.sample()
+        _, before = parse_round(base)
+        out = mark_published(base, "100", "55", True)
+        _, after = parse_round(out)
+        self.assertEqual(after[1], before[1])
+        self.assertEqual((after[0].published_reply, after[0].reacted), ("55", True))
+        self.assertEqual((after[0].kind, after[0].action, after[0].reply),
+                         (before[0].kind, before[0].action, before[0].reply))
+
+    def test_two_marks_never_leave_two_lines(self):
+        out = mark_published(self.sample(), "100", "55", True)
+        out = mark_published(out, "101", None, True)
+        out = mark_published(out, "100", "56", False)
+        self.assertEqual(out.count("\n<!-- fc:published"), 2)
+
+    def test_dash_is_not_a_valid_reply_id(self):
+        with self.assertRaises(ValueError):
+            mark_published(self.sample(), "100", "-", True)
+
+    def test_non_numeric_ids_refused(self):
+        with self.assertRaises(ValueError):
+            mark_published(self.sample(), "abc", "1", True)
+        with self.assertRaises(ValueError):
+            mark_published(self.sample(), "100", "abc", True)
 
 
 class EncodingTests(unittest.TestCase):

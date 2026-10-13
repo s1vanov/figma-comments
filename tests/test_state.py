@@ -118,11 +118,37 @@ class StateTests(unittest.TestCase):
         self.assertEqual((self.ws / "state.json").read_text(encoding="utf-8"), "{not json")
 
     def test_wrong_shape_raises(self):
-        for payload in ("[]", '{"rounds": {}}', '{"threads": []}', '{"threads": {"1": {"reacted": "yes"}}}',
-                        '{"rounds": [{"n": "1", "collected_at": "x"}]}', '{"threads": {"1": 5}}'):
+        for payload in ("[]", '{"version": 1, "rounds": {}}', '{"version": 1, "threads": []}',
+                        '{"version": 1, "threads": {"1": {"reacted": "yes"}}}',
+                        '{"version": 1, "rounds": [{"n": "1", "collected_at": "x"}]}',
+                        '{"version": 1, "threads": {"1": 5}}'):
             (self.ws / "state.json").write_text(payload, encoding="utf-8")
             with self.assertRaises(ValueError, msg=payload):
                 load_state(self.ws)
+
+    def test_version_is_checked(self):
+        for payload in ('{"rounds": [], "threads": {}}', '{"version": 2, "rounds": [], "threads": {}}',
+                        '{"version": true, "rounds": [], "threads": {}}', '{"version": "1"}'):
+            (self.ws / "state.json").write_text(payload, encoding="utf-8")
+            with self.assertRaises(ValueError, msg=payload):
+                load_state(self.ws)
+        (self.ws / "state.json").write_text('{"version": 1}', encoding="utf-8")
+        self.assertEqual(load_state(self.ws), State())
+
+    def test_thread_kind_and_action_are_validated(self):
+        for thread in ('{"kind": "bug"}', '{"action": "publish"}', '{"action": ""}'):
+            (self.ws / "state.json").write_text('{"version": 1, "threads": {"1": %s}}' % thread, encoding="utf-8")
+            with self.assertRaises(ValueError, msg=thread):
+                load_state(self.ws)
+        (self.ws / "state.json").write_text(
+            '{"version": 1, "threads": {"1": {"kind": "", "action": "skip"}, "2": {"kind": "edit", "action": "reply+react"}}}',
+            encoding="utf-8",
+        )
+        self.assertEqual(sorted(load_state(self.ws).threads), ["1", "2"])
+
+    def test_shared_file_key_rule(self):
+        from fclib import roundfile, state
+        self.assertIs(roundfile.FILE_KEY_RE, state.FILE_KEY_RE)
 
     def test_constants(self):
         self.assertEqual(KINDS, ("edit", "question", "unclear", "conflict", "out-of-scope", "confirmation", "duplicate"))
