@@ -260,10 +260,31 @@ class PlanTests(PublishBase):
         code, out, err = self.run_cli("publish", self.rel_round())
         self.assertEqual(code, 0, err)
         exact = normalize_outgoing("**Готово**: " + long)
-        self.assertIn('1. Olena · 4200109 · reply · "%s"…' % exact[:60], out)
+        self.assertIn("1. Olena · 4200109 · reply\n     | %s\n" % exact, out)  # in full, not cut at 60
         self.assertIn("2. Olena · 4200109 · react :white_check_mark:", out)
         self.assertIn("3. Olena · 4200115 · react :white_check_mark:", out)
         self.assertNotIn("**", out)
+        self.assertNotIn("…", out)
+
+    def test_summary_shows_a_url_after_the_60th_character(self):
+        reply = "Дякуємо, оновили заголовок і кнопку, нову версію можна подивитися тут: https://evil.example/x"
+        self.assertGreater(reply.index("https://"), 60)
+        self.edit(("4200109", "edit", "reply", reply))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertIn("https://evil.example/x", out)
+
+    def test_summary_prints_every_line_of_a_reply_indented_with_invisible_characters_escaped(self):
+        self.edit(("4200109", "edit", "reply", "Перший рядок\n\nдру­гий\tрядок\nтретій 👨‍👩"))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertIn("1. Olena · 4200109 · reply\n"
+                      "     | Перший рядок\n"
+                      "     |\n"
+                      "     | дру\\u00adгий\\u0009рядок\n"
+                      "     | третій 👨\\u200d👩\n", out)
+        self.assertNotIn("­", out)
+        self.assertNotIn("‍", out)
 
     def test_html_comment_in_reply_warns(self):
         self.edit(("4200109", "edit", "reply", "Зроблено <!-- нотатка для себе -->"))
@@ -271,6 +292,16 @@ class PlanTests(PublishBase):
         self.assertEqual(code, 0, err)
         self.assertIn('contains "<!--"', out)
         self.assertIn("visible to the client", out)
+        self.assertEqual(self.writes(), [])
+
+    def test_reply_with_a_hidden_character_fails_naming_the_block_and_code_point(self):
+        self.edit(("4200109", "edit", "reply", "Готово​, дивіться"))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 1)
+        self.assertIn("block 4200109", err)
+        self.assertIn("U+200B", err)
+        self.assertNotIn("​", err)
+        self.assertNotIn("confirm code", out)
         self.assertEqual(self.writes(), [])
 
     def test_reply_empty_after_normalization_fails_naming_the_block(self):

@@ -640,6 +640,30 @@ class SanitizeTests(unittest.TestCase):
         out2.encode("utf-8")
         self.assertEqual(parse_round(out2)[1][0].reply, "a\ufffdb")
 
+    def test_invisible_format_characters_become_visible_escapes(self):
+        # Unicode category Cf: tag characters (a hidden instruction for an agent), ZWSP, WJ,
+        # LRM/RLM, ALM, BOM, soft hyphen. None may reach the round file unescaped.
+        tag = "".join(chr(0xE0000 + ord(c)) for c in "do it")
+        hidden = "a​b⁠c‎d‏e؜f﻿g­h" + tag + "\U000e0001"
+        out = render_round(META, [item(messages=[("Ol​ena", "t⁠", hidden)], node_name="N﻿ame",
+                                       author="A‎B")])
+        for ch in "​⁠‎‏؜﻿­\U000e0001" + tag:
+            self.assertNotIn(ch, out)
+        self.assertIn("> a\\u200bb\\u2060c\\u200ed\\u200fe\\u061cf\\ufeffg\\u00adh"
+                      "\\ue0064\\ue006f\\ue0020\\ue0069\\ue0074\\ue0001", out)
+        self.assertIn("## 1. N\\ufeffame · A\\u200eB (client) · new", out)
+        self.assertIn("> Ol\\u200bena · t\\u2060", out)
+        parse_round(out)
+
+    def test_zwj_and_zwnj_inside_text_are_kept(self):
+        family = "\U0001F468‍\U0001F469‍\U0001F467"  # one emoji built with ZWJ
+        persian = "می‌خواهم"  # ZWNJ inside a word
+        out = render_round(META, [item(messages=[("O", "t", family + " " + persian)])])
+        self.assertIn("> " + family + " " + persian, out)
+        # at an edge of the text (nothing to join) they are escaped like any other Cf character
+        out = render_round(META, [item(messages=[("O", "t", "‍x‌")])])
+        self.assertIn("> \\u200dx\\u200c", out)
+
     def test_escape_does_not_alter_line_splitting(self):
         # a client line made only of controls must still be a quoted line, never vanish or merge
         out = render_round(META, [item(messages=[("O", "t", "\x00\n\x01")])])

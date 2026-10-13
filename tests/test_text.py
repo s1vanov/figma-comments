@@ -34,6 +34,24 @@ class NormalizeOutgoingTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=repr(empty)):
                 normalize_outgoing(empty)
 
+    def test_invisible_and_bidi_characters_are_refused_naming_the_code_point(self):
+        cases = {
+            "\U000e0041": "U+E0041",  # tag character
+            "‮": "U+202E", "‪": "U+202A", "⁦": "U+2066", "⁩": "U+2069",
+            "‎": "U+200E", "‏": "U+200F", "؜": "U+061C",
+            "​": "U+200B", "⁠": "U+2060", "﻿": "U+FEFF",
+        }
+        for ch, name in cases.items():
+            with self.assertRaises(ValueError, msg=name) as cm:
+                normalize_outgoing("Fixed the title" + ch + " as asked")
+            self.assertIn(name, str(cm.exception))
+            self.assertNotIn(ch, str(cm.exception))
+
+    def test_zwj_and_zwnj_are_allowed(self):
+        family = "\U0001F468‍\U0001F469‍\U0001F467"
+        self.assertEqual(normalize_outgoing("Done " + family), "Done " + family)
+        self.assertEqual(normalize_outgoing("می‌خ"), "می‌خ")
+
     def test_emoji_alone_is_text(self):
         self.assertEqual(normalize_outgoing("\U0001F44D"), "\U0001F44D")
         self.assertEqual(normalize_outgoing("\u2705"), "\u2705")

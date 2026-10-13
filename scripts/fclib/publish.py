@@ -62,7 +62,7 @@ from .model import Participant, Thread, build_threads, parse_ts
 from .participants import load_participants
 from .roundfile import Block, RoundMeta, mark_published, parse_round
 from .state import State, ThreadState, find_round, load_state, round_published, save_state
-from .text import normalize_outgoing
+from .text import ForbiddenCharacter, normalize_outgoing
 from .urls import comment_link
 
 CODE_LEN = 10
@@ -269,6 +269,8 @@ def build_plan(blocks: List[Block], state: State, meta: Optional[RoundMeta] = No
         if block.action in ("reply", "reply+react") and not reply_id:
             try:
                 text = normalize_outgoing(block.reply)
+            except ForbiddenCharacter as exc:
+                raise ValueError("block %s: %s" % (block.root_id, exc)) from None
             except ValueError:
                 raise ValueError(
                     "block %s: the reply has no letter, digit or emoji once markup is removed; "

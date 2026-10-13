@@ -386,16 +386,32 @@ def _snippet(text: str, limit: int = SNIPPET_LEN) -> str:
     return '"%s"%s' % ("".join(out), "\u2026" if len(text) > limit else "")
 
 
-def _entry_line(entry: Entry, number: Optional[int] = None) -> List[str]:
+REPLY_GUTTER = "     |"
+
+
+def _visible(line: str) -> str:
+    """One line of the exact text with every non-printable character (Cf, Cc, ...) as \\uXXXX."""
+    return "".join(ch if ch.isprintable() else "\\u%04x" % ord(ch) for ch in line)
+
+
+def _full_text_lines(text: str) -> List[str]:
+    """Every line of a planned reply, indented under its item: what the designer confirms."""
+    return [(REPLY_GUTTER + " " + _visible(line)).rstrip() for line in text.split("\n")]
+
+
+def _entry_line(entry: Entry, number: Optional[int] = None, full: bool = False) -> List[str]:
     head = "  %s%s \u00b7 %s \u00b7 %s" % (
         "%d. " % number if number is not None else "",
         _capped(entry.author), _clean(entry.root_id), _ACTION_LABEL[entry.action],
     )
     if entry.comment_id:
         head += " %s" % _clean(entry.comment_id)
-    if entry.text is not None and entry.reason is None:
-        head += " \u00b7 " + _snippet(entry.text)
+    shown = entry.text is not None and entry.reason is None
+    if shown and not full:
+        head += " \u00b7 " + _snippet(entry.text or "")
     lines = [head]
+    if shown and full:
+        lines.extend(_full_text_lines(entry.text or ""))
     if entry.text is not None and entry.reason is None and "<!--" in entry.text:
         lines.append('     warning: this reply contains "<!--"; Figma shows it as plain text, '
                      "visible to the client")
@@ -457,7 +473,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
         if report.planned:
             lines.append("Writes, in this order (the exact text that will be posted):")
             for number, entry in enumerate(report.planned, 1):
-                lines.extend(_entry_line(entry, number))
+                lines.extend(_entry_line(entry, number, full=True))
         lines.extend(_recovered_lines(report, done=False))
         lines.extend(_skip_lines(report))
         if report.error:

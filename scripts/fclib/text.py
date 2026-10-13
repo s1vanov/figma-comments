@@ -14,6 +14,23 @@ _INLINE_PATTERNS = (
     re.compile(r"~~(?=\S)(.+?)(?<=\S)~~"),
 )
 _LINE_BREAK_RE = re.compile(r"\r\n|\r|\u2028|\u2029")
+# Characters a reader does not see but that change what is shown or read: tag characters
+# (U+E0000-E007F, invisible text an agent still reads), the bidi controls and marks, ZWSP,
+# word joiner and BOM. A reply containing one is refused, never silently cleaned.
+_FORBIDDEN_RE = re.compile(
+    "[\U000e0000-\U000e007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\u200b\u2060\ufeff]"
+)
+
+
+class ForbiddenCharacter(ValueError):
+    """The reply contains an invisible or text-direction character (named as U+XXXX)."""
+
+    def __init__(self, ch: str) -> None:
+        self.code_point = "U+%04X" % ord(ch)
+        super().__init__(
+            "the reply contains the invisible character %s (a text-direction control, zero-width "
+            "character or tag character); remove it" % self.code_point
+        )
 
 
 def _has_text(text: str) -> bool:
@@ -32,8 +49,13 @@ def normalize_outgoing(text: str) -> str:
     paired emphasis markers are dropped, trailing whitespace on each line and
     leading/trailing blank lines are removed. Known side effect: "__init__" becomes
     "init", because paired double underscores are treated as bold markers.
-    Raises ValueError if nothing sendable remains: no letter, digit or symbol emoji.
+    Raises ForbiddenCharacter (a ValueError) for a tag character, bidi control, LRM/RLM/ALM,
+    ZWSP, word joiner or BOM anywhere in the text (ZWJ and ZWNJ are allowed), and ValueError
+    if nothing sendable remains: no letter, digit or symbol emoji.
     """
+    bad = _FORBIDDEN_RE.search(text)
+    if bad:
+        raise ForbiddenCharacter(bad.group(0))
     text = _LINE_BREAK_RE.sub("\n", text)
     text = _LINK_RE.sub(r"\1 (\2)", text)
     for pattern in _INLINE_PATTERNS:

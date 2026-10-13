@@ -88,6 +88,7 @@ _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 _BIDI_CONTROLS = frozenset(
     [chr(c) for c in range(0x202A, 0x202F)] + [chr(c) for c in range(0x2066, 0x206A)]
 )
+_JOINERS = frozenset("\u200c\u200d")  # ZWNJ, ZWJ: kept between two visible characters
 # Reply text may not contain these at column 0: they are the fields of a block whose
 # heading/marker was deleted (or text that would be dropped).
 _REPLY_FORBIDDEN = ("kind:", "action:", "reply:", "Link: https://www.figma.com/", ">")
@@ -186,17 +187,29 @@ def _trim_blank_edges(lines: List[str]) -> List[str]:
 # render
 # ---------------------------------------------------------------------------
 
-def _scrub(s: str) -> str:
-    """Make one line of untrusted text safe to show: no lone surrogates, no invisible controls.
+def _visible_neighbour(ch: str) -> bool:
+    return not ch.isspace() and unicodedata.category(ch) != "Cf"
 
-    Lone surrogates become U+FFFD. C0/C1 controls (except tab) and bidi controls become a
-    visible ``\\uXXXX`` escape. Line-break characters are NOT handled here: callers split first.
+
+def _scrub(s: str) -> str:
+    """Make one line of untrusted text safe to show: no lone surrogates, no invisible characters.
+
+    Lone surrogates become U+FFFD. C0/C1 controls (except tab) and every format character
+    (Unicode category Cf: tag characters U+E0000-E007F, ZWSP, WJ, LRM/RLM, ALM, BOM, the
+    bidi controls, soft hyphen...) become a visible ``\\uXXXX`` escape, so text an agent
+    would read but a person would not see cannot hide in the round file. ZWJ (U+200D) and
+    ZWNJ (U+200C) between two visible characters stay: emoji sequences and several scripts
+    need them. Line-break characters are NOT handled here: callers split first.
     """
     s = _SURROGATE_RE.sub("\ufffd", str(s))
     out = []
-    for ch in s:
+    last = len(s) - 1
+    for i, ch in enumerate(s):
         o = ord(ch)
-        if (o < 0x20 and ch != "\t") or 0x7F <= o < 0xA0 or ch in _BIDI_CONTROLS:
+        if ch in _JOINERS and 0 < i < last and _visible_neighbour(s[i - 1]) and _visible_neighbour(s[i + 1]):
+            out.append(ch)
+        elif ((o < 0x20 and ch != "\t") or 0x7F <= o < 0xA0 or ch in _BIDI_CONTROLS
+              or 0xE0000 <= o <= 0xE007F or unicodedata.category(ch) == "Cf"):
             out.append("\\u%04x" % o)
         else:
             out.append(ch)
