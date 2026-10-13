@@ -74,12 +74,35 @@ def find_round(state: State, n: int, collected_at: str) -> Optional[Dict[str, An
     return None
 
 
-def ensure_workspace(root: Path, file_key: str) -> Path:
-    """Create ``<root>/.figma-comments/<file_key>/`` and its ``.gitignore`` (only if absent)."""
+def check_workspace(root: Path, file_key: str) -> Path:
+    """``<root>/.figma-comments/<file_key>`` (it may not exist yet), or ValueError.
+
+    Refused: ``.figma-comments`` or ``.figma-comments/<file_key>`` being a symlink (even a
+    dangling one), or either resolving anywhere but inside ``root``. A planted link must
+    never redirect where client data, state and the lock are read and written.
+    """
     if not isinstance(file_key, str) or not FILE_KEY_RE.fullmatch(file_key):
         raise ValueError("file key must be 22-128 ASCII letters and digits")
-    ws = Path(root) / WORKSPACE_DIR / file_key
+    root = Path(root)
+    real_root = root.resolve()
+    for rel in (Path(WORKSPACE_DIR), Path(WORKSPACE_DIR) / file_key):
+        path = root / rel
+        if path.is_symlink():
+            raise ValueError("%s is a symbolic link; refusing to use it. The workspace must be a real "
+                             "folder inside the project: remove the link and run collect again" % rel.as_posix())
+        if path.exists() and path.resolve() != real_root / rel:
+            raise ValueError("%s resolves outside the project folder; refusing to use it" % rel.as_posix())
+    return root / WORKSPACE_DIR / file_key
+
+
+def ensure_workspace(root: Path, file_key: str) -> Path:
+    """Create ``<root>/.figma-comments/<file_key>/`` and its ``.gitignore`` (only if absent).
+
+    ``check_workspace`` runs before and after creating it.
+    """
+    ws = check_workspace(root, file_key)
     ws.mkdir(parents=True, exist_ok=True)
+    check_workspace(root, file_key)
     try:
         # "x" = create exclusively: an existing .gitignore (even a customised one) is never touched.
         with open(ws / ".gitignore", "x", encoding="utf-8", newline="\n") as fh:

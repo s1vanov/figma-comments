@@ -457,7 +457,7 @@ def _not_planned_line(report: PublishReport) -> str:
 def cmd_publish(args: argparse.Namespace) -> int:
     path = Path(args.round_file)
     try:
-        report = publish(_make_api(), path, confirm=args.confirm)
+        report = publish(_make_api(), path, confirm=args.confirm, root=Path.cwd())
     except CodeMismatch as exc:
         print("error: %s" % _clean(exc), file=sys.stderr)
         return 2
@@ -509,6 +509,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 def cmd_retract(args: argparse.Namespace) -> int:
     ref = parse_file_ref(args.ref)
+    workspace_path(Path.cwd(), ref.file_key)  # a symlinked or outside workspace is refused
     try:
         ws = ensure_workspace(Path.cwd(), ref.file_key) if args.confirm is not None else None
         report = retract(_make_api(), ref.file_key, args.comment_id, confirm=args.confirm, ws=ws)

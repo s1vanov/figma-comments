@@ -61,7 +61,7 @@ from .lock import LOCK_NAME, LockBusy, workspace_lock  # noqa: F401  (LOCK_NAME,
 from .model import Participant, Thread, build_threads, parse_ts
 from .participants import load_participants
 from .roundfile import Block, RoundMeta, mark_published, parse_round
-from .state import State, ThreadState, find_round, load_state, round_published, save_state
+from .state import State, ThreadState, check_workspace, find_round, load_state, round_published, save_state
 from .text import ForbiddenCharacter, normalize_outgoing
 from .urls import comment_link
 
@@ -501,21 +501,34 @@ def _threads(api: FigmaAPI, key: str) -> Dict[str, Thread]:
     return {t.root_id: t for t in build_threads(api.comments(key))}
 
 
+def _workspace_of(round_path: Path, key: str, root: Path) -> Path:
+    """The workspace ``<root>/.figma-comments/<key>``, which must be the round file's real folder."""
+    ws = check_workspace(root, key)  # ValueError for a symlinked or outside workspace
+    if round_path.resolve().parent != ws.resolve():
+        raise ValueError("run publish from the project folder; the round file must be in "
+                         ".figma-comments/%s/" % key)
+    return ws
+
+
 def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
-            confirm: Optional[str] = None) -> PublishReport:
+            confirm: Optional[str] = None, root: Optional[Path] = None) -> PublishReport:
     """Without `confirm`: a dry run (plan, preflight, code; saves the summary). With it: write.
 
+    `root` (the CLI passes the current directory): the round file must then be in
+    ``<root>/.figma-comments/<key>/``, resolved paths equal, else ValueError.
     Raises CodeMismatch (no request made), LockBusy, RoundParseError / ValueError for a file
     that cannot be published (no write made). API errors do not raise: they stop the run and
     are in `report.error`, next to what was already done.
     """
     round_path = Path(round_path)
     raw = round_path.read_bytes()
+    text = raw.decode("utf-8")
+    meta, blocks = parse_round(text)
+    if root is not None:
+        ws = _workspace_of(round_path, meta.file_key, Path(root))
     code = confirm_code(raw)
     if confirm is not None and not _code_matches(confirm, code):
         raise CodeMismatch("the round file changed or the code is wrong; run publish without --confirm again")
-    text = raw.decode("utf-8")
-    meta, blocks = parse_round(text)
     ws = Path(ws) if ws is not None else round_path.parent
     if ws.name != meta.file_key:
         raise ValueError(

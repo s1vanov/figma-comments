@@ -49,9 +49,9 @@ from .model import (
 from .participants import load_participants
 from .roundfile import _NODE_RE, Block, RoundItem, RoundMeta, RoundParseError, parse_round, render_round
 from .state import (
-    WORKSPACE_DIR,
     State,
     ThreadState,
+    check_workspace,
     ensure_workspace,
     load_state,
     round_published,
@@ -110,8 +110,12 @@ class Snapshot:
 
 
 def workspace_path(root: Path, file_key: str) -> Path:
-    """Where the workspace is, without creating it (read-only commands use this)."""
-    return Path(root) / WORKSPACE_DIR / file_key
+    """Where the workspace is, without creating it (read-only commands use this).
+
+    ValueError when ``.figma-comments`` or the workspace is a symlink or resolves outside
+    ``root`` (state.check_workspace).
+    """
+    return check_workspace(root, file_key)
 
 
 def fetch_snapshot(api: FigmaAPI, ref: FileRef, ws: Path) -> Snapshot:

@@ -10,6 +10,7 @@ import io
 import itertools
 import json
 import os
+import shutil
 import signal
 import sys
 import tempfile
@@ -50,6 +51,7 @@ NOW = datetime(2026, 10, 13, 10, 0, 0, tzinfo=timezone.utc)
 COLLECTED = "2026-10-13T10:00:00Z"
 AFTER = "2026-10-13T10:30:00.000Z"  # after the collection, before any replay write
 COMMENTS_PATH = "/v1/files/%s/comments" % KEY
+WRONG_PLACE = "run publish from the project folder; the round file must be in .figma-comments/%s/" % KEY
 
 
 def reactions_path(root):
@@ -325,10 +327,34 @@ class PlanTests(PublishBase):
         self.edit(("4200109", "edit", "reply", "Так."))
         moved = self.cwd / "round-01.md"
         moved.write_bytes(self.round.read_bytes())
-        code, out, err = self.run_cli("publish", "round-01.md", "--confirm", confirm_code(moved.read_bytes()))
+        code, out, err = self.run_cli("publish", "round-01.md", "--confirm", "0123456789")
         self.assertEqual(code, 1)
-        self.assertIn("workspace", err)
+        self.assertIn(WRONG_PLACE, err)
         self.assertEqual(self.writes(), [])
+
+    def test_round_file_in_a_folder_named_after_the_key_elsewhere_is_refused(self):
+        self.edit(("4200109", "edit", "reply", "Так."))
+        other = self.cwd / "elsewhere" / KEY
+        other.mkdir(parents=True)
+        (other / "round-01.md").write_bytes(self.round.read_bytes())
+        for args in ((str(other / "round-01.md"),), (str(other / "round-01.md"), "--confirm", "0123456789")):
+            code, out, err = self.run_cli("publish", *args)
+            self.assertEqual(code, 1, args)
+            self.assertIn(WRONG_PLACE, err)
+        self.assertEqual(sorted(p.name for p in other.iterdir()), ["round-01.md"])  # no .plans, no lock
+        self.assertEqual(self.writes(), [])
+
+    def test_publish_must_run_from_the_project_folder(self):
+        self.edit(("4200109", "edit", "reply", "Так."))
+        old = self.cwd
+        self.cwd = self.tmp  # the parent of the project folder
+        try:
+            code, out, err = self.run_cli("publish", str(self.round))
+        finally:
+            self.cwd = old
+        self.assertEqual(code, 1)
+        self.assertIn(WRONG_PLACE, err)
+        self.assertFalse((self.ws / ".plans").exists())
 
     def test_nothing_to_publish(self):
         code, out, err = self.run_cli("publish", self.rel_round())
@@ -732,6 +758,51 @@ class SummaryAndLockTests(PublishBase):
         self.publish_now(wrap=Probe)
         self.assertEqual(len(seen), 1)
         self.assertIn("pid %d" % os.getpid(), seen[0])
+
+
+@unittest.skipIf(sys.platform == "win32", "symlinks need privileges on Windows")
+class WorkspaceLinkTests(PublishBase):
+    """A planted symlink must never redirect where the tool reads and writes (L3)."""
+
+    COMMANDS = (
+        ("collect", KEY),
+        ("status", KEY),
+        ("participants", "set", KEY, "client-9", "--side", "client", "--handle", "X"),
+        ("retract", KEY, "4200105"),
+        ("retract", KEY, "4200105", "--confirm", "0123456789"),
+    )
+
+    def check_all_refused(self, needle):
+        self.edit(("4200109", "edit", "reply", "Так."))
+        for argv in self.COMMANDS + (("publish", self.rel_round()),):
+            code, out, err = self.run_cli(*argv)
+            self.assertEqual(code, 1, (argv, out, err))
+            self.assertIn(needle, err, argv)
+        self.assertEqual(self.writes(), [])
+
+    def test_symlinked_figma_comments_folder_is_refused(self):
+        real = self.tmp / "real-fc"
+        (self.cwd / ".figma-comments").rename(real)
+        os.symlink(str(real), str(self.cwd / ".figma-comments"))
+        before = sorted(p.name for p in (real / KEY).iterdir())
+        self.check_all_refused(".figma-comments is a symbolic link")
+        self.assertEqual(sorted(p.name for p in (real / KEY).iterdir()), before)  # nothing new written there
+
+    def test_symlinked_workspace_folder_is_refused(self):
+        real = self.tmp / "victim"
+        self.ws.rename(real)
+        os.symlink(str(real), str(self.ws))
+        before = sorted(p.name for p in real.iterdir())
+        self.check_all_refused(".figma-comments/%s is a symbolic link" % KEY)
+        self.assertEqual(sorted(p.name for p in real.iterdir()), before)
+
+    def test_dangling_symlinked_workspace_is_refused_by_the_first_collect(self):
+        shutil.rmtree(str(self.ws))
+        os.symlink(str(self.tmp / "nowhere"), str(self.ws))
+        code, out, err = self.run_cli("collect", KEY)
+        self.assertEqual(code, 1)
+        self.assertIn("is a symbolic link", err)
+        self.assertFalse((self.tmp / "nowhere").exists())
 
 
 # ---------------------------------------------------------------------------
