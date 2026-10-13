@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 NODES_BATCH_SIZE = 100
 REACTION_EMOJI = ":white_check_mark:"
+FIRST_PAGE_NODE = "0:1"
 
 
 def _q(segment: str) -> str:
@@ -55,6 +56,20 @@ class FigmaAPI:
                         name = document.get("name")
                 result[node_id] = name
         return result
+
+    def file_meta(self, file_key: str, node_id: Optional[str] = None) -> Dict[str, Any]:
+        """Top-level fields of one depth-1 nodes call (``linkAccess``, ``name``, ``role``...), without
+        the nodes themselves. Asks for ``node_id`` or, when the link has none, the first page
+        ``0:1``; an id the file does not know still comes back with the top-level fields (measured
+        2026-10-13 on the sandbox file with ``linkAccess``: ``view``)."""
+        data = self._client.call(
+            "GET",
+            "/v1/files/%s/nodes" % _q(file_key),
+            query={"ids": node_id or FIRST_PAGE_NODE, "depth": 1},
+        )
+        if not isinstance(data, dict):
+            raise ValueError("unexpected response")
+        return {k: v for k, v in data.items() if k != "nodes"}
 
     def reply(self, file_key: str, root_id: str, message: str) -> Dict[str, Any]:
         return self._client.call(

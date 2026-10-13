@@ -202,6 +202,14 @@ class LinuxTests(StoreTestCase):
         self.assertEqual(backend, "file")
         self.assertEqual(info, ts.TokenInfo(SECRET, date(2026, 12, 1), "file"))
 
+    def test_set_token_without_expiry_is_read_back_as_unknown(self):
+        self.platform("linux")
+        with mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool")):
+            ts.set_token(SECRET, None, allow_file=True)
+            info = ts.get_token({})
+        self.assertEqual(info, ts.TokenInfo(SECRET, None, "file"))
+        self.assertIsNone(ts.days_left(info, date(2026, 10, 13)))
+
     def test_linux_nothing_anywhere_names_the_setup_command(self):
         with mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool")):
             with self.assertRaises(ts.TokenMissing) as cm:

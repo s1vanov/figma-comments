@@ -1,4 +1,5 @@
-"""Command line: `collect`, `participants list|set`, `status`, `publish`, `retract`.
+"""Command line: `collect`, `participants list|set`, `status`, `publish`, `retract`,
+`doctor`, `token set|status|clear`.
 
 Output is written for an agent that pays for every line it reads: each command prints a
 short summary, at most 10 items per list and a "...and N more" line (status and
@@ -15,9 +16,10 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -31,6 +33,7 @@ from .collect import (
     node_of,
     workspace_path,
 )
+from .doctor import expiry_notice, run_doctor
 from .http import (
     Client,
     CurlTransport,
@@ -45,7 +48,7 @@ from .publish import REASON_TEXT, CodeMismatch, Entry, PublishReport, publish, r
 from .replay import ReplayTransport
 from .roundfile import RoundParseError
 from .state import ensure_workspace
-from .token_store import TokenMissing, get_token
+from .token_store import TokenMissing, clear_token, days_left, get_token, set_token
 from .urls import FileRef, comment_link, parse_file_ref
 
 PROG = "figma_comments.py"
@@ -122,7 +125,11 @@ def _unknown_lines(unknown: List[AuthorSummary], show_all: bool, hint: str) -> L
     return _cut(rows, show_all, hint)
 
 
-def _make_api() -> FigmaAPI:
+def _today() -> date:
+    return date.today()
+
+
+def _make_api(notice: bool = True) -> FigmaAPI:
     replay = os.environ.get(REPLAY_ENV)
     if replay:
         print("WARNING: %s is set (%s); using offline fixtures, nothing reaches Figma."
@@ -130,7 +137,10 @@ def _make_api() -> FigmaAPI:
         transport: Any = ReplayTransport(Path(replay), fail=os.environ.get(REPLAY_FAIL_ENV))
         token = "replay-token"
     else:
-        token = get_token().token
+        info = get_token()
+        if notice:
+            _print_expiry_notice(info)
+        token = info.token
         transport = FallbackTransport(UrllibTransport(), CurlTransport())
     return FigmaAPI(Client(token, transport))
 
@@ -422,6 +432,163 @@ def cmd_retract(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# doctor and token
+# ---------------------------------------------------------------------------
+
+def _print_expiry_notice(info: Any) -> None:
+    """Every command that reads the token: a stderr line when it expires in 14 days or fewer."""
+    text = expiry_notice(info, _today())
+    if text:
+        print(text, file=sys.stderr)
+
+
+def _stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin.isatty())
+    except (ValueError, OSError):
+        return False
+
+
+def _prompt_secret(prompt: str) -> str:
+    return getpass.getpass(prompt)  # hidden input; never echoed
+
+
+def _prompt_line(prompt: str) -> str:
+    return input(prompt)
+
+
+def _parse_iso_date(value: str) -> date:
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError("the expiry date must look like YYYY-MM-DD") from None
+
+
+def _expires_arg(value: str) -> date:
+    try:
+        return _parse_iso_date(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def _plural_days(n: int) -> str:
+    return "%d day%s" % (n, "" if n == 1 else "s")
+
+
+def _check_lines(check: Any) -> List[str]:
+    tag = "FAIL" if not check.ok else ("warn" if check.warning else "ok")
+    head = "[%s] %s" % (tag, check.name)
+    if check.detail:
+        head += ": " + _clean(check.detail)
+    lines = [head]
+    if check.action:
+        lines.append("      -> " + _clean(check.action))
+    return lines
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    ref = parse_file_ref(args.ref) if args.ref else None
+    replay = bool(os.environ.get(REPLAY_ENV))
+    lines: List[str] = []
+    if replay:
+        lines.append("note: doctor results are not meaningful in replay mode (offline fixtures, nothing reaches Figma)")
+    checks = run_doctor(ref, _today(), lambda: _make_api(notice=False), token_loader=get_token, replay=replay)
+    for check in checks:
+        lines.extend(_check_lines(check))
+    failed = [c for c in checks if not c.ok]
+    warned = [c for c in checks if c.ok and c.warning]
+    if failed:
+        lines.append("%d problem%s found; fix the actions above, then run doctor again."
+                     % (len(failed), "" if len(failed) == 1 else "s"))
+    else:
+        lines.append("All checks passed%s." % (" (%d warning%s)" % (len(warned), "" if len(warned) == 1 else "s")
+                                                if warned else ""))
+    lines.append("Not checked: scope file_comments:write (testing it would post a comment); "
+                 "publish reports it if the token lacks it.")
+    _emit(lines)
+    return 1 if failed else 0
+
+
+def cmd_token_set(args: argparse.Namespace) -> int:
+    if not _stdin_is_tty():
+        raise ValueError("token set reads the token with hidden input and needs a terminal: "
+                         "run this in your own terminal (a token piped or passed through an agent is refused)")
+    today = _today()
+    expires: Optional[date] = args.expires
+    if expires is None:
+        answer = _prompt_line("Token expiry date, YYYY-MM-DD (Enter if unknown): ").strip()
+        expires = _parse_iso_date(answer) if answer else None
+    if expires is not None and expires < today:
+        raise ValueError("that expiry date is in the past (%s); enter the date shown in Figma" % expires)
+    token = _prompt_secret("Figma personal access token (input is hidden): ").strip()
+    if not token:
+        raise ValueError("no token entered; nothing was stored")
+    backend = set_token(token, expires, allow_file=args.allow_file)
+    lines = ["Token stored in: %s." % backend]
+    if expires is None:
+        lines.append("warning: expiry unknown, so no warning will come before the token stops working. "
+                     "Run `token set --expires YYYY-MM-DD` again when you know it.")
+    else:
+        lines.append("Expires %s (%s left)." % (expires, _plural_days((expires - today).days)))
+    if os.environ.get("FIGMA_TOKEN", "").strip():
+        lines.append("note: FIGMA_TOKEN is set in this environment and takes precedence over the stored "
+                     "token; unset it, or the stored one is never used.")
+    lines.append("Next: %s doctor <figma-file-link>" % PROG)
+    _emit(lines)
+    return 0
+
+
+def _source_note(source: str) -> Optional[str]:
+    if source == "env":
+        return ("The token comes from the FIGMA_TOKEN environment variable; `token clear` does not touch it. "
+                "Remove it from your shell profile to stop using it.")
+    if source == "keychain:figma-pat":
+        return ("This is the older Keychain item 'figma-pat', not this tool's own entry. `token clear` does not "
+                "remove it; delete it yourself in Keychain Access (search 'figma-pat') if you want it gone.")
+    return None
+
+
+def cmd_token_status(args: argparse.Namespace) -> int:
+    if os.environ.get(REPLAY_ENV):
+        _emit(["Replay mode (%s is set): no token is looked up." % REPLAY_ENV])
+        return 0
+    info = get_token()
+    left = days_left(info, _today())
+    lines = ["Token: found (source: %s)" % _clean(info.source)]
+    if left is None:
+        lines.append("Expires: unknown")
+    elif left < 0:
+        lines.append("Expires: %s -- EXPIRED %s ago. Generate a new token and run `token set --expires YYYY-MM-DD`."
+                     % (info.expires, _plural_days(-left)))
+    else:
+        lines.append("Expires: %s (%s left)" % (info.expires, _plural_days(left)))
+        if left <= 14:
+            lines.append("warning: 14 days or fewer left; generate a new token with the same scopes "
+                         "and run `token set --expires YYYY-MM-DD`.")
+    note = _source_note(info.source)
+    if note:
+        lines.append(note)
+    _emit(lines)
+    return 0
+
+
+def cmd_token_clear(args: argparse.Namespace) -> int:
+    clear_token()
+    lines = ["Cleared this tool's own stored token (OS credential store entry and the token file, if there were any)."]
+    try:
+        left = get_token()
+    except TokenMissing:
+        lines.append("No token is found anywhere now.")
+    else:
+        lines.append("A token is still found (source: %s), so commands keep working with it." % _clean(left.source))
+        note = _source_note(left.source)
+        if note:
+            lines.append(note)
+    _emit(lines)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # parser and entry
 # ---------------------------------------------------------------------------
 
@@ -473,6 +640,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("comment_id", help="id of your reply")
     p.add_argument("--confirm", metavar="CODE", default=None, help="the code printed by the run without --confirm")
     p.set_defaults(func=cmd_retract)
+
+    p = sub.add_parser("doctor", help="check the token, its scopes and expiry, and (with a link) access to the file")
+    p.add_argument("ref", nargs="?", default=None, help="Figma file URL or file key (optional)")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("token", help="store, inspect or remove the Figma token (run set in your own terminal)")
+    tsub = p.add_subparsers(dest="token_command", metavar="<set|status|clear>")
+    tsub.required = True
+
+    ts = tsub.add_parser("set", help="read the token with hidden input and store it (needs a terminal)")
+    ts.add_argument("--expires", metavar="YYYY-MM-DD", type=_expires_arg, default=None,
+                    help="the expiry date shown in Figma; asked for when omitted")
+    ts.add_argument("--allow-file", action="store_true",
+                    help="where no OS credential store exists, keep the token in a mode-600 file")
+    ts.set_defaults(func=cmd_token_set)
+
+    tt = tsub.add_parser("status", help="where the token comes from and how many days are left (never the value)")
+    tt.set_defaults(func=cmd_token_status)
+
+    tc = tsub.add_parser("clear", help="remove this tool's stored token and say what remains")
+    tc.set_defaults(func=cmd_token_clear)
     return parser
 
 

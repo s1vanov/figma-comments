@@ -379,11 +379,14 @@ def get_token(env: Mapping[str, str] = os.environ) -> TokenInfo:
     raise TokenMissing(_missing_message())
 
 
-def set_token(token: str, expires: date, allow_file: bool = False) -> str:
-    """Store the token; returns the backend name. The file backend needs ``allow_file``."""
+def set_token(token: str, expires: Optional[date], allow_file: bool = False) -> str:
+    """Store the token; returns the backend name. The file backend needs ``allow_file``.
+
+    ``expires=None`` stores the token with an unknown expiry (``get_token`` then reports None).
+    """
     if not isinstance(token, str) or not token or any(c.isspace() or ord(c) < 32 for c in token):
         raise ValueError("token must be a non-empty single-line value without whitespace")
-    raw = json.dumps({"token": token, "expires": expires.isoformat()})
+    raw = json.dumps({"token": token, "expires": expires.isoformat() if expires else None})
     plat = _platform()
     try:
         return _write_os_store(raw, plat)
