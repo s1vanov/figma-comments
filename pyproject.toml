@@ -1,0 +1,36 @@
+# Tool configuration only. This is not a Python package: the skill is run as
+# `python3 scripts/figma_comments.py` and has no dependencies. ruff, mypy and
+# bandit are used in CI (and through `uvx` locally); nothing here is installed
+# with the skill.
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+extend-exclude = ["research", ".superpowers", ".claude"]
+
+[tool.ruff.lint]
+# E, W: pycodestyle; F: pyflakes; I: import order; B: likely bugs.
+select = ["E", "W", "F", "I", "B"]
+# E501: the project has no formatter and wraps by hand; a length cap would only force noise edits.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: `import tests` must stay first (it puts scripts/ on sys.path before `fclib` is imported),
+# so import sorting is off there; short names like `l` in comprehensions are fine in assertions.
+"tests/*" = ["I001", "E741"]
+
+[tool.ruff.lint.isort]
+# scripts/ is on sys.path (tests/__init__.py), so `fclib` is first-party.
+known-first-party = ["fclib"]
+
+[tool.mypy]
+files = ["scripts"]
+mypy_path = "scripts"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[tool.bandit]
+# -ll (medium and above) is chosen on the command line in CI. Nothing is skipped here.
+exclude_dirs = ["tests", "tools", "research"]

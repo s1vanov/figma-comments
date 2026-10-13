@@ -113,7 +113,7 @@ A posted reply cannot be edited, only deleted. `retract <ref> <comment_id>` dele
 | `doctor [<ref>]` | check token, expiry, 3 of 4 scopes, access | no |
 | `collect <ref>` | write the next `round-NN.md` | no |
 | `participants list <ref> [--all]` | who is client, who is team | no |
-| `participants set <ref> <user_id> --side client\|team [--role R] [--lead\|--no-lead]` | classify one person | no |
+| `participants set <ref> <user_id> --side client\|team [--role R] [--lead\|--no-lead] [--handle H]` | classify one person | no |
 | `status <ref> [--all]` | group counts, unknown authors (with root ids), "ready to close" links | no |
 | `status <ref> --thread <comment_id>` | find the thread of any comment (root or reply) and why it is or is not in the round | no |
 | `publish <round-file>` | summary and code (saves a local plan file) | no |

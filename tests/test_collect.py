@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import tests  # noqa: F401
-from tests.helpers import KEY, OWNER, api_for, big_comments, big_nodes, make_replay, put_participants
+from tests.helpers import KEY, api_for, big_comments, big_nodes, make_replay, put_participants
 
 from fclib.collect import CollectResult, collect
 from fclib.model import AuthorSummary, Group

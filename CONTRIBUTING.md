@@ -60,7 +60,7 @@ python tools/validate_skill.py
 
 Run in GitHub only: CodeQL (Python) and gitleaks (secret scanning). The workflows (`.github/workflows/ci.yml`, `codeql.yml`, `secrets.yml`) use `permissions: contents: read` and pin every action to a full commit SHA; Dependabot updates the actions weekly.
 
-The `tools/` scripts and the workflow files are being added in the same 0.1.0 release as this document. Until they land, the unit tests are the check that runs.
+CI installs ruff, mypy and bandit at exact versions (see `ci.yml`), so a new release of a tool cannot turn the build red by itself; bump the versions on purpose.
 
 ## Optional local tests
 

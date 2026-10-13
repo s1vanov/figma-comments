@@ -62,7 +62,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Never follow redirects, so the token is not forwarded to another host.
     Returning None makes urllib surface the 3xx as an HTTPError."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -85,7 +85,7 @@ class UrllibTransport:
             return Response(e.code, dict(e.headers.items()) if e.headers else {}, e.read())
         except urllib.error.URLError as e:
             if isinstance(e.reason, ssl.SSLCertVerificationError):
-                raise e.reason
+                raise e.reason from e
             raise
 
 
@@ -139,7 +139,7 @@ class CurlTransport:
             try:
                 status = int(code.strip())
             except ValueError:
-                raise TransportError("curl returned no HTTP status")
+                raise TransportError("curl returned no HTTP status") from None
             with open(hdr_path, "r", encoding="utf-8", errors="replace") as fh:
                 raw_headers = fh.read()
             return Response(status, _parse_header_block(raw_headers), payload)

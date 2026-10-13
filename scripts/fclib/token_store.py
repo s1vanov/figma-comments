@@ -234,7 +234,7 @@ def _win_api() -> Any:
         raise _StoreUnavailable("Windows Credential Manager is only available on Windows")
     from ctypes import POINTER, c_int, c_uint32, c_void_p, c_wchar_p
 
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     pcred = POINTER(_credentialw_type())
     advapi32.CredWriteW.argtypes = [pcred, c_uint32]
     advapi32.CredWriteW.restype = c_int

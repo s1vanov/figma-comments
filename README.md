@@ -1,5 +1,7 @@
 # figma-comments
 
+[![CI](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml) [![CodeQL](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml)
+
 An Agent Skill that collects a client's Figma comments into a file the designer and an AI agent work through together, then posts only the replies and ✅ reactions the designer approved, each into the right comment thread.
 
 Status: 0.1.0, not released yet. See [Status](#status) for what has and has not been tested.
@@ -257,8 +259,8 @@ Each limit says how it was established. "Measured" means a throwaway script call
 
 0.1.0, unreleased, pre-1.0. What that means concretely, as of 14 October 2026:
 
-- 448 unit tests pass on macOS with Python 3.13 (`python3 -m unittest discover -s tests`; 2 skipped: the Windows-only test and an opt-in live Keychain test). The tests use no network.
-- The CI matrix (macOS, Windows, Linux × Python 3.9 and 3.13, plus ruff, mypy, bandit, CodeQL and gitleaks) is being added; until it runs, Python 3.9, Windows and Linux are untested by us.
+- 468 unit tests pass on macOS with Python 3.9 and 3.13 (`python3 -m unittest discover -s tests`; 2 skipped: the Windows-only test and an opt-in live Keychain test). The tests use no network. ruff, mypy, bandit and the documentation checks in `tools/` pass locally.
+- The CI workflows (the tests on macOS, Windows and Linux × Python 3.9 and 3.13; ruff, mypy and bandit; the documentation and skill checks; CodeQL; gitleaks) are written but have not run on GitHub yet, so the badges above show a result only after the first run; until then Windows and Linux are untested by us.
 - The Figma API behaviour the code relies on was measured on 13 October 2026; the CLI itself has not yet done a live round against Figma.
 - One person, the author, uses it. Nobody else has installed it.
 - Figma can change its REST API at any time. Parsing is strict, so a change is more likely to stop a command than to post something wrong.

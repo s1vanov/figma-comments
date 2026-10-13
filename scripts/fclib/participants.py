@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Dict
+from typing import Any, Dict
 
 from fclib.model import Participant
 
@@ -57,7 +57,7 @@ def save_participants(path: str, people: Dict[str, Participant]) -> None:
                 "participant %r: side must be 'client' or 'team', got %r"
                 % (user_id, person.side)
             )
-        entry = {"handle": person.handle, "side": person.side}
+        entry: Dict[str, Any] = {"handle": person.handle, "side": person.side}
         if person.role:
             entry["role"] = person.role
         if person.lead:

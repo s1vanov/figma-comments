@@ -29,8 +29,8 @@ from .collect import (
     GROUP_LABELS,
     PARTICIPANTS_FILE,
     CollectResult,
-    collect,
     author_label,
+    collect,
     fetch_snapshot,
     locate_comment,
     node_of,
@@ -39,7 +39,6 @@ from .collect import (
     workspace_path,
 )
 from .doctor import expiry_notice, run_doctor
-from .lock import Terminated
 from .http import (
     Client,
     CurlTransport,
@@ -48,6 +47,7 @@ from .http import (
     TransportError,
     UrllibTransport,
 )
+from .lock import Terminated
 from .model import AuthorSummary, Group, Participant
 from .participants import SIDES, load_participants, save_participants
 from .publish import REASON_TEXT, CodeMismatch, Entry, PublishReport, publish, retract, stop_message
@@ -419,7 +419,7 @@ def _recovered_lines(report: PublishReport, done: bool) -> List[str]:
         return []
     lines = ["%s (%d); already in Figma (a lost answer or a reply written by hand), nothing is posted again:"
              % ("Recorded without writing" if done else "Will be recorded without writing", len(report.recovered))]
-    lines.extend(l for e in report.recovered for l in _entry_line(e))
+    lines.extend(line for e in report.recovered for line in _entry_line(e))
     return lines
 
 
@@ -478,7 +478,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     lines = ["Published from %s: %d %s, %d %s" % (
         name, replies, "reply" if replies == 1 else "replies",
         reactions, "reaction" if reactions == 1 else "reactions")]
-    lines.extend(l for e in report.published for l in _entry_line(e))
+    lines.extend(line for e in report.published for line in _entry_line(e))
     lines.extend(_recovered_lines(report, done=True))
     lines.extend(_skip_lines(report))
     if report.ready_links:

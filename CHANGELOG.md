@@ -24,6 +24,7 @@ First version.
 - A reply recorded only in `state.json` (its marker missing from the round file) is never offered again by `collect`; if `state.json` cannot be saved after a write, the marker is still attempted and the run stops with an explicit message.
 - Every file under `scripts/` is ASCII-only, checked by `tests/test_source_ascii.py`.
 - Baseline of agent behaviour without the skill (12 runs, 13 October 2026).
+- GitHub checks: CI (the unit tests on Ubuntu, macOS and Windows × Python 3.9 and 3.13; ruff; mypy; bandit; the documentation and skill checks), CodeQL, gitleaks and Dependabot for the actions, all pinned to commit SHAs. `tools/check_docs.py` fails when the docs disagree with the code, `tools/selftest_checks.py` breaks each rule on purpose to prove the checker catches it, `tools/validate_skill.py` validates `SKILL.md`. Tool settings are in `pyproject.toml`, which is not a package.
 
 ### Known gaps
 

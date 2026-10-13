@@ -1,5 +1,7 @@
 # figma-comments
 
+[![CI](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml) [![CodeQL](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml)
+
 Agent Skill, який збирає коментарі клієнта з Figma у файл, з яким дизайнер і ІІ-агент працюють разом, а потім публікує лише погоджені дизайнером відповіді й реакції ✅, кожну в потрібну гілку коментаря.
 
 Статус: 0.1.0, ще не випущено. Що перевірено, а що ні, описано в розділі [Статус](#статус).
@@ -257,8 +259,8 @@ fc publish .figma-comments/<file_key>/round-02.md --confirm 3f9a1c07be
 
 0.1.0, не випущено, до 1.0. Конкретно, станом на 14 жовтня 2026 року:
 
-- 448 модульних тестів проходить на macOS з Python 3.13 (`python3 -m unittest discover -s tests`; 2 пропущено: тест лише для Windows і живий тест Keychain, що вмикається окремо). Тести не ходять у мережу.
-- Матриця CI (macOS, Windows, Linux × Python 3.9 і 3.13, плюс ruff, mypy, bandit, CodeQL і gitleaks) додається; доки вона не запрацювала, Python 3.9, Windows і Linux нами не перевірені.
+- 468 модульних тестів проходить на macOS з Python 3.9 і 3.13 (`python3 -m unittest discover -s tests`; 2 пропущено: тест лише для Windows і живий тест Keychain, що вмикається окремо). Тести не ходять у мережу. ruff, mypy, bandit і перевірки документації з `tools/` локально проходять.
+- Робочі процеси CI (тести на macOS, Windows і Linux × Python 3.9 і 3.13; ruff, mypy і bandit; перевірки документації та скіла; CodeQL; gitleaks) написані, але на GitHub ще не запускалися, тож бейджі вгорі покажуть результат лише після першого запуску; доти Windows і Linux нами не перевірені.
 - Поведінку API Figma, на яку спирається код, виміряно 13 жовтня 2026 року; сам CLI живого раунду з Figma ще не проходив.
 - Користується одна людина, автор. Більше ніхто не встановлював.
 - Figma може змінити REST API будь-коли. Розбір відповідей суворий, тож зміна швидше зупинить команду, ніж призведе до публікації чогось не того.

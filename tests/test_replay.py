@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import tests  # noqa: F401
-from tests.helpers import FIXTURES, KEY, api_for, make_replay
+from tests.helpers import FIXTURES, KEY, make_replay
 
 from fclib.http import Client, FigmaHTTPError
 from fclib.api import FigmaAPI
