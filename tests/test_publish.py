@@ -666,14 +666,15 @@ class SummaryAndLockTests(PublishBase):
         lock.write_text("pid 4242\nsince 2026-10-13T10:05:00Z\n", encoding="utf-8")
         code, out2, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out))
         self.assertEqual(code, 1)
-        self.assertIn("another publish or retract seems to be running (lock ", err)
+        self.assertIn("another publish, retract or collect seems to be running (lock ", err)
         self.assertIn("pid 4242, since 2026-10-13T10:05:00Z", err)
-        self.assertIn("delete the lock file and retry", err)
+        self.assertIn("Ask the person running the tool whether a run is still going; do not delete the lock yourself.", err)
+        self.assertNotIn("delete the lock file", err)
         self.assertEqual(self.writes(), [])
         self.assertTrue(lock.exists())
         code, _, err = self.run_cli("retract", KEY, "4200105", "--confirm", "0000000000")
         self.assertEqual(code, 1)
-        self.assertIn("another publish or retract", err)
+        self.assertIn("another publish, retract or collect", err)
         self.assertEqual(self.writes(), [])
 
     def test_lock_is_removed_after_a_run_even_one_that_failed(self):
@@ -822,8 +823,9 @@ class HardeningTests(PublishBase):
         with mock.patch.object(cli, "publish", side_effect=Terminated(143)):
             code, out, err = self.run_cli("publish", self.rel_round())
         self.assertEqual(code, 143)
-        self.assertIn("terminated", err)
-        self.assertIn("lock was released", err)
+        self.assertIn("stopped by SIGTERM; the lock was released; what was already posted is recorded", err)
+        error_line = [ln for ln in err.splitlines() if ln.startswith("error:")][0]
+        self.assertNotIn("publish", error_line)
 
     # -- 4: collect takes the same lock --------------------------------------
 
@@ -832,7 +834,7 @@ class HardeningTests(PublishBase):
         lock.write_text("pid 4242\nsince 2026-10-13T10:05:00Z\n", encoding="utf-8")
         code, out, err = self.run_cli("collect", KEY)
         self.assertEqual(code, 1)
-        self.assertIn("another publish or retract seems to be running (lock ", err)
+        self.assertIn("another publish, retract or collect seems to be running (lock ", err)
         self.assertIn("pid 4242, since 2026-10-13T10:05:00Z", err)
         self.assertFalse((self.ws / "round-02.md").exists())
         self.assertEqual(len(load_state(self.ws).rounds), 1)

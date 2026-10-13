@@ -1,5 +1,5 @@
 """Command line: `collect`, `participants list|set`, `status`, `publish`, `retract`,
-`doctor`, `token set|status|clear`.
+`doctor`, `token set|status|clear`. `status --thread <comment_id>` finds the thread of any comment.
 
 Output is written for an agent that pays for every line it reads: each command prints a
 short summary, at most 10 items per list and a "...and N more" line (status and
@@ -30,8 +30,12 @@ from .collect import (
     PARTICIPANTS_FILE,
     CollectResult,
     collect,
+    author_label,
     fetch_snapshot,
+    locate_comment,
     node_of,
+    round_verdict,
+    unknown_in,
     workspace_path,
 )
 from .doctor import expiry_notice, run_doctor
@@ -48,8 +52,8 @@ from .model import AuthorSummary, Group, Participant
 from .participants import SIDES, load_participants, save_participants
 from .publish import REASON_TEXT, CodeMismatch, Entry, PublishReport, publish, retract, stop_message
 from .replay import ReplayTransport
-from .roundfile import RoundParseError
-from .state import ensure_workspace
+from .roundfile import RoundParseError, parse_round
+from .state import ensure_workspace, load_state
 from .token_store import TokenMissing, clear_token, days_left, get_token, set_token
 from .urls import FileRef, comment_link, parse_file_ref
 
@@ -117,11 +121,22 @@ def _capped(value: Any, limit: int = HANDLE_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "\u2026"
 
 
+ROOTS_SHOWN = 5
+
+
+def _roots_cell(roots: Any) -> str:
+    """'threads 4200118, 4200119 +3 more': the root ids to give to `status --thread`."""
+    shown = ", ".join(_capped(r, 24) for r in list(roots)[:ROOTS_SHOWN])
+    rest = len(roots) - ROOTS_SHOWN
+    return "threads %s%s" % (shown, " +%d more" % rest if rest > 0 else "")
+
+
 def _unknown_lines(unknown: List[AuthorSummary], show_all: bool, hint: str) -> List[str]:
     rows = [
-        '  %s | "%s" | %d message%s | "%s"'
+        '  %s | "%s" | %d message%s | "%s"%s'
         % (_capped(a.user_id) or "(no id)", _capped(a.handle), a.count,
-           "" if a.count == 1 else "s", _clean(a.sample))
+           "" if a.count == 1 else "s", _clean(a.sample),
+           " | " + _roots_cell(a.roots) if a.roots else "")
         for a in unknown
     ]
     return _cut(rows, show_all, hint)
@@ -188,10 +203,77 @@ def cmd_collect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _element_line(api: FigmaAPI, key: str, node_id: Optional[str]) -> str:
+    if not node_id:
+        return "Element: (no element)"
+    try:
+        name = api.nodes(key, [node_id]).get(node_id)
+    except (FigmaHTTPError, TransportError, ValueError):
+        return "Element: %s (name unavailable)" % _capped(node_id)
+    if name is None:
+        return "Element: %s (no longer in the file)" % _capped(node_id)
+    return "Element: %s (%s)" % (_capped(name), _capped(node_id))
+
+
+def _round_file_with(ws: Path, state: Any, root_id: str) -> Optional[str]:
+    """Name of the latest round file when it holds a block for this thread."""
+    if not state.rounds:
+        return None
+    name = "round-%02d.md" % len(state.rounds)
+    try:
+        _, blocks = parse_round((ws / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RoundParseError):  # UnicodeDecodeError is a ValueError
+        return None
+    return name if any(b.root_id == root_id for b in blocks) else None
+
+
+def _thread_lines(args: argparse.Namespace, api: FigmaAPI, ref: FileRef, snap: Any, ws: Path) -> List[str]:
+    wanted = _capped(args.thread, 60)
+    thread, comment = locate_comment(snap, args.thread)
+    if comment is None:
+        raise ValueError("no comment %s in this file" % wanted)
+    if thread is None:
+        return ["Comment %s is a reply whose parent comment is gone; it is ignored and belongs to no thread."
+                % wanted]
+    root = thread.root_id
+    state = load_state(ws)
+    in_round, why = round_verdict(thread, snap, state.threads.get(root),
+                                  state.rounds[-1]["collected_at"] if state.rounds else None)
+    is_root = str(comment.get("id")) == root
+    last = thread.messages[-1]
+    authors = list(dict.fromkeys(author_label(m, snap) for m in thread.messages))
+    node_id = node_of(thread)
+    lines = [
+        "Thread %s (comment %s is %s)" % (_capped(root, 30), wanted, "the root" if is_root else "a reply in it"),
+        _element_line(api, ref.file_key, node_id),
+        "Group: %s; %d message%s" % (GROUP_LABELS[snap.group_of[root]], len(thread.messages),
+                                     "" if len(thread.messages) == 1 else "s"),
+        "Authors: " + ", ".join(_capped(a) for a in authors[:LIST_LIMIT])
+        + (" \u2026and %d more" % (len(authors) - LIST_LIMIT) if len(authors) > LIST_LIMIT else ""),
+        "Last message: %s, %s" % (_capped(author_label(last, snap)),
+                                  _clean(last.get("created_at") or "?")),
+    ]
+    if snap.group_of[root] is Group.UNKNOWN_AUTHOR:
+        ids = unknown_in(thread, snap)
+        why += " - classify with: %s participants set %s %s --side client|team" % (
+            PROG, ref.file_key, _capped(ids[0]) if len(ids) == 1 else "<user_id>")
+    elif in_round:
+        existing = _round_file_with(ws, state, root)
+        if existing:
+            why += " (block in %s)" % existing
+    lines.append("In the round: %s (%s)" % ("yes" if in_round else "no", why))
+    lines.append(comment_link(ref.file_key, node_id, root))
+    return lines
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     ref = parse_file_ref(args.ref)
     ws = workspace_path(Path.cwd(), ref.file_key)
-    snap = fetch_snapshot(_make_api(), ref, ws)
+    api = _make_api()
+    snap = fetch_snapshot(api, ref, ws)
+    if args.thread is not None:
+        _emit(_thread_lines(args, api, ref, snap, ws))
+        return 0
     lines = [
         "File %s: %d threads (%s)" % (ref.file_key, len(snap.threads), _counts_line(snap.counts)),
     ]
@@ -623,9 +705,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ref", help="Figma file URL or file key")
     p.set_defaults(func=cmd_collect)
 
-    p = sub.add_parser("status", help="group counts, unknown authors and the threads ready to close")
+    p = sub.add_parser("status", help="group counts, unknown authors and the threads ready to close; --thread finds one comment")
     p.add_argument("ref", help="Figma file URL or file key")
     p.add_argument("--all", action="store_true", help="list every item instead of the first %d" % LIST_LIMIT)
+    p.add_argument("--thread", metavar="COMMENT_ID", default=None,
+                   help="find the thread that holds this comment (root or reply) and say why it is or is not in the round")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("participants", help="who is the client and who is the team")
@@ -695,8 +779,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         return func(args)
     except Terminated as exc:  # SIGTERM while the workspace lock was held
-        print("error: terminated by SIGTERM; the workspace lock was released. Run the command again: "
-              "what publish already posted is recorded and not posted twice", file=sys.stderr)
+        print("error: stopped by SIGTERM; the lock was released; what was already posted is recorded",
+              file=sys.stderr)
         return exc.code if isinstance(exc.code, int) else 143
     except _EXPECTED_ERRORS as exc:
         print("error: %s" % _clean(exc), file=sys.stderr)

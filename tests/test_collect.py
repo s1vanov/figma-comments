@@ -65,7 +65,7 @@ class CollectTests(CollectBase):
         self.assertEqual(result.groups, Counter(EXPECTED.values()))
         self.assertEqual(
             result.unknown,
-            [AuthorSummary("unknown-1", "Dev", 1, result.unknown[0].sample)],
+            [AuthorSummary("unknown-1", "Dev", 1, result.unknown[0].sample, ("4200118",))],
         )
         self.assertTrue(result.unknown[0].sample.startswith("У проді"))
         self.assertEqual((result.carried, result.skipped), (0, 0))

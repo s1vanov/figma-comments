@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -98,6 +98,7 @@ class Snapshot:
     people: Dict[str, Participant]
     owner_id: str
     orphans: int
+    comments: List[dict] = field(default_factory=list)  # the flat GET-comments list
 
     @property
     def counts(self) -> "Counter[Group]":
@@ -127,7 +128,68 @@ def fetch_snapshot(api: FigmaAPI, ref: FileRef, ws: Path) -> Snapshot:
         people=people,
         owner_id=owner_id,
         orphans=len(orphan_replies(comments)),
+        comments=comments,
     )
+
+
+def locate_comment(snap: Snapshot, comment_id: str) -> Tuple[Optional[Thread], Optional[dict]]:
+    """(thread, comment) for a comment id, root or reply. (None, comment) when the comment
+    is a reply whose parent is gone; (None, None) when the file has no such comment."""
+    wanted = str(comment_id).strip()
+    comment = next((c for c in snap.comments if str(c.get("id")) == wanted), None)
+    if comment is None:
+        return None, None
+    for thread in snap.threads:
+        if any(str(m.get("id")) == wanted for m in thread.messages):
+            return thread, comment
+    return None, comment
+
+
+def author_label(message: dict, snap: Snapshot) -> str:
+    """'handle (side)' for one message; the side is 'unknown' for someone on neither list."""
+    uid = _uid(message)
+    handle = _handle(message, snap.people)
+    if uid == snap.owner_id:
+        return "%s (team)" % handle
+    if uid in snap.people:
+        return "%s (%s)" % (handle, snap.people[uid].side)
+    return "%s [%s] (unknown)" % (handle, uid or "no id")
+
+
+def unknown_in(thread: Thread, snap: Snapshot) -> List[str]:
+    """User ids in the thread that are on neither list (and are not the token owner)."""
+    ids = [_uid(m) for m in thread.messages]
+    return [u for u in dict.fromkeys(ids) if u != snap.owner_id and u not in snap.people]
+
+
+def round_verdict(thread: Thread, snap: Snapshot, ts: Optional[ThreadState],
+                  last_collected: Optional[str]) -> Tuple[bool, str]:
+    """(would collect put it in a round, why). Mirrors the order of rules in collect."""
+    group = snap.group_of[thread.root_id]
+    pending = _carry_state(ts)
+    label = GROUP_LABELS[group]
+    if group is Group.RESOLVED:
+        kept = "; its unfinished draft stays in state.json" if pending is not None else ""
+        return False, "resolved in Figma, so no block%s" % kept
+    if group is Group.UNKNOWN_AUTHOR:
+        return False, "unknown author %s" % ", ".join(unknown_in(thread, snap))
+    if ts is not None and ts.action == "skip":
+        if group not in _BLOCK_LABELS:
+            return False, "skipped by 'skip', and the thread is %s" % label
+        if _client_wrote_after(thread, snap, ts.skipped_through or last_collected):
+            return True, "skipped earlier, but a client wrote after that; it returns as client replied"
+        return False, "skipped by 'skip'; hidden until a client writes after %s" % (
+            ts.skipped_through or last_collected or "the skip")
+    if pending is not None:
+        return True, "carried: an unfinished draft or reaction from an earlier round"
+    if group in _BLOCK_LABELS:
+        return True, "%s; collect puts it in the round" % label
+    if group is Group.INTERNAL:
+        return False, "internal: no client message in the thread, so no block"
+    if group is Group.WAITING_CLIENT:
+        return False, "waiting for the client: the last message is the team's; it returns when a client replies"
+    return False, ("ready to close: a team check mark is newer than the last client message; "
+                   "close it in Figma by hand")
 
 
 def node_of(thread: Thread) -> Optional[str]:

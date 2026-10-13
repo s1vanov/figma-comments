@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 CHECK_EMOJI = ":white_check_mark:"
 
@@ -47,6 +47,7 @@ class AuthorSummary:
     handle: str
     count: int
     sample: str
+    roots: Tuple[str, ...] = ()  # root ids of the threads they wrote in, in thread order
 
 
 class Group(Enum):
@@ -211,6 +212,7 @@ def unknown_authors(
     handles: Dict[str, str] = {}
     counts: Dict[str, int] = {}
     samples: Dict[str, str] = {}
+    roots: Dict[str, List[str]] = {}
     for thread in threads:
         for message in thread.messages:
             uid = _user_id(message)
@@ -221,5 +223,8 @@ def unknown_authors(
                 counts[uid] = 0
                 handles[uid] = str((message.get("user") or {}).get("handle") or "")
                 samples[uid] = _sample(message.get("message"))
+                roots[uid] = []
             counts[uid] += 1
-    return [AuthorSummary(uid, handles[uid], counts[uid], samples[uid]) for uid in order]
+            if thread.root_id not in roots[uid]:
+                roots[uid].append(thread.root_id)
+    return [AuthorSummary(uid, handles[uid], counts[uid], samples[uid], tuple(roots[uid])) for uid in order]

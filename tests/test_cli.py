@@ -342,6 +342,138 @@ class CompactOutputTests(CliBase):
         self.assertEqual(len(links), 150)
 
 
+class ThreadLookupTests(CliBase):
+    """status <ref> --thread <comment_id>: find a comment the round file does not show."""
+
+    def thread(self, comment_id, *extra):
+        code, out, err = self.run_cli("status", KEY, "--thread", comment_id, *extra)
+        return code, out, quiet(err)
+
+    def test_unknown_author_thread_says_who_and_how_to_classify(self):
+        put_participants(self.cwd)
+        code, out, err = self.thread("4200118")
+        self.assertEqual((code, err), (0, ""))
+        lines = out.splitlines()
+        self.assertLessEqual(len(lines), 12)
+        self.assertIn("Thread 4200118", lines[0])
+        self.assertIn("comment 4200118 is the root", lines[0])
+        self.assertIn("CTA button", out)
+        self.assertIn("unknown author", out)
+        self.assertIn('Dev [unknown-1] (unknown)', out)
+        self.assertIn("In the round: no", out)
+        self.assertIn("unknown author unknown-1 - classify with: figma_comments.py participants set %s unknown-1 "
+                      "--side client|team" % KEY, out)
+        self.assertIn("Last message: Dev [unknown-1] (unknown), 2026-10-13T08:30:41.905Z", out)
+        self.assertIn(comment_link(KEY, "1:5", "4200118"), out.splitlines())
+
+    def test_a_reply_id_finds_its_thread(self):
+        put_participants(self.cwd)
+        code, out, err = self.thread("4200110")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Thread 4200107", out.splitlines()[0])
+        self.assertIn("comment 4200110 is a reply", out.splitlines()[0])
+        self.assertIn("waiting for client", out)
+        self.assertIn("Last message: Manager (team), 2026-10-12T09:40:51.903Z", out)
+        self.assertIn("Authors: Olena (client), Manager (team)", out)
+        self.assertIn("In the round: no", out)
+
+    def test_resolved_internal_and_ready_threads_have_their_own_reason(self):
+        put_participants(self.cwd)
+        expect = {
+            "4200101": ("resolved", "resolved in Figma"),
+            "4200113": ("internal", "no client message"),
+            "4200104": ("ready to close", "close it in Figma"),
+        }
+        for comment_id, (group, why) in expect.items():
+            _, out, _ = self.thread(comment_id)
+            self.assertIn("Group: %s" % group, out, comment_id)
+            self.assertIn(why, out, comment_id)
+
+    def test_a_thread_that_collect_would_write_is_in_the_round(self):
+        put_participants(self.cwd)
+        _, out, _ = self.thread("4200109")
+        self.assertIn("Group: new", out)
+        self.assertIn("In the round: yes", out)
+        self.run_cli("collect", KEY)
+        _, out, _ = self.thread("4200109")
+        self.assertIn("In the round: yes", out)
+        self.assertIn("round-01.md", out)
+
+    def test_a_skipped_thread_is_hidden_until_a_client_writes(self):
+        from fclib.state import State, ThreadState, save_state
+        put_participants(self.cwd)
+        state = State(rounds=[{"n": 1, "collected_at": "2026-10-13T09:00:00Z"}],
+                      threads={"4200109": ThreadState(action="skip", skipped_through="2026-10-13T09:00:00Z")})
+        save_state(self.ws, state)
+        _, out, _ = self.thread("4200109")
+        self.assertIn("In the round: no", out)
+        self.assertIn("skipped", out)
+
+    def test_a_deleted_element_is_named_as_such(self):
+        put_participants(self.cwd)
+        _, out, _ = self.thread("4200107")
+        self.assertIn("1:9", out)
+        self.assertIn("no longer in the file", out)
+
+    def test_unknown_comment_id_exits_1(self):
+        put_participants(self.cwd)
+        code, out, err = self.thread("999")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "error: no comment 999 in this file\n")
+
+    def test_the_echoed_id_is_cleaned(self):
+        code, _, err = self.thread("9\n9\x1b[31m")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertNotIn("\x1b", err)
+
+    def test_it_only_reads(self):
+        put_participants(self.cwd)
+        self.thread("4200118")
+        self.assertFalse(any(self.ws.glob("round-*.md")))
+        self.assertFalse((self.ws / "state.json").exists())
+        self.assertEqual((self.replay / "writes.jsonl").read_text(encoding="utf-8"), "")
+
+    def test_orphan_reply_is_reported_not_crashed(self):
+        comments = json.loads((self.replay / "comments.json").read_text(encoding="utf-8"))["comments"]
+        comments.append({"id": "4200190", "parent_id": "000", "message": "lost", "created_at": "2026-10-13T08:00:00.000Z",
+                         "user": {"id": "client-1", "handle": "Olena"}, "order_id": None})
+        (self.replay / "comments.json").write_text(json.dumps({"comments": comments}), encoding="utf-8")
+        put_participants(self.cwd)
+        code, out, err = self.thread("4200190")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("parent comment is gone", out)
+
+    def test_unknown_author_lines_carry_root_ids(self):
+        put_participants(self.cwd)
+        for argv in (("status", KEY), ("status", KEY, "--all"), ("collect", KEY)):
+            _, out, _ = self.run_cli(*argv)
+            row = [l for l in out.splitlines() if l.startswith("  unknown-1 |")]
+            self.assertEqual(len(row), 1, argv)
+            self.assertTrue(row[0].endswith("| threads 4200118"), row[0])
+
+    def test_many_threads_of_one_unknown_author_stay_on_one_capped_line(self):
+        comments = json.loads((self.replay / "comments.json").read_text(encoding="utf-8"))["comments"]
+        for i in range(12):
+            comments.append({"id": "43000%02d" % i, "parent_id": "", "message": "x", "created_at": "2026-10-13T08:%02d:00.000Z" % i,
+                             "user": {"id": "unknown-1", "handle": "Dev"}, "order_id": None,
+                             "client_meta": {"node_id": "1:2", "node_offset": {"x": 0, "y": 0}}})
+        (self.replay / "comments.json").write_text(json.dumps({"comments": comments}), encoding="utf-8")
+        put_participants(self.cwd)
+        _, out, _ = self.run_cli("status", KEY)
+        row = [l for l in out.splitlines() if l.startswith("  unknown-1 |")][0]
+        self.assertIn("4200118", row)
+        self.assertIn("+8 more", row)
+        self.assertLessEqual(len(row), 200)
+
+    def test_the_option_is_documented_in_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["status", "--help"])
+        self.assertIn("--thread", out.getvalue())
+
+
 class ProcessTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

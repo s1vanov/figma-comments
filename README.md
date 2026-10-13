@@ -187,7 +187,8 @@ The round file format is described in [references/round-file.md](references/roun
 | `collect <ref>` | Reads all comments (`as_md=true`), element names and participants; writes the next `round-NN.md` and records the round in `state.json`. Carries unfinished blocks from the previous round. Refuses if the previous round file does not parse, and never overwrites an existing round file. | no |
 | `participants list <ref> [--all]` | Shows `participants.json`. The token owner always counts as team. | no |
 | `participants set <ref> <user_id> --side client\|team [--role R] [--lead\|--no-lead] [--handle H]` | Adds or changes one person. The handle is taken from the comments if not given. | no |
-| `status <ref> [--all]` | Group counts, unknown authors, and the "ready to close" links. | no |
+| `status <ref> [--all]` | Group counts, unknown authors (with the root ids of their threads), and the "ready to close" links. | no |
+| `status <ref> --thread <comment_id>` | Finds the thread that holds this comment (root or reply) and prints its root id, element, group, authors with their side, last message, and why it is or is not in the round. Exit 1 if the file has no such comment. | no |
 | `publish <round-file>` | Dry run: the plan (every reply with its exact text, every reaction), what is skipped and why, and the confirmation code. | no |
 | `publish <round-file> --confirm <code>` | Posts the plan if the file is byte-for-byte the one the code was computed from. Re-reads the thread before every write; stops at the first API error; records each write in the round file and `state.json` right after it lands, so a second run resumes without posting twice. | yes |
 | `retract <ref> <comment_id>` | Shows one of your own replies and a code; deletes nothing. Refuses root comments and other people's comments. | no |
