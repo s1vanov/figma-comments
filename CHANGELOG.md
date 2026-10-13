@@ -19,7 +19,7 @@ First version.
 - `doctor [<ref>]`: token, expiry (a warning at 14 days or fewer, a failure only when expired), account, comment access and the file's link-sharing setting, with one action per problem. It exercises three of the four scopes (`current_user:read`, `file_comments:read`, `file_content:read`); `file_comments:write` cannot be checked without posting a comment. An expired token prints `warning: ...` on stderr from the other commands, which go on.
 - HTTP through `urllib` without following redirects; automatic fallback to `curl` on `CERTIFICATE_VERIFY_FAILED` with the token on stdin; waits out HTTP 429 `Retry-After` up to 300 seconds per wait, 600 seconds per run and 5 retries; the `curl` fallback runs with `-q --proto =https --proto-redir =https --max-redirs 0 --tlsv1.2`.
 - Outgoing text normalized to plain text (paired Markdown markers removed, links as "text (url)", U+2028 and U+2029 turned into line breaks); a reply with no letter, digit or emoji left stops the whole plan before any request (`_` alone counts as empty, `👍` does not).
-- Replay transport for tests and scenarios (`FIGMA_COMMENTS_REPLAY`, `FIGMA_COMMENTS_REPLAY_FAIL`), announced on stderr.
+- Replay transport for tests and scenarios (`FIGMA_COMMENTS_REPLAY`, `FIGMA_COMMENTS_REPLAY_FAIL`), announced on stderr and as the first line of stdout of every command.
 - `SKILL.md` with references for the round file, sorting and troubleshooting.
 - A reply recorded only in `state.json` (its marker missing from the round file) is never offered again by `collect`; if `state.json` cannot be saved after a write, the marker is still attempted and the run stops with an explicit message.
 - Every file under `scripts/` is ASCII-only, checked by `tests/test_source_ascii.py`.
@@ -39,11 +39,27 @@ Fixes from the audit made before the first release (14 October 2026):
 - A comment with an invalid id from the API is skipped with a warning. The replay warning is also the first line of stdout.
 - If the round file is edited during `publish --confirm`, the marker is written into the edited file when it still parses, and the run stops.
 
+### Fixed
+
+From the whole-branch review (14 October 2026):
+
+- No second reply after a `collect` between the steps of `publish`: `publish` accepts only the latest round file (an older one exits 1, "this is round NN but the latest is round MM"); `collect` records a carried reply draft whose reply is already in Figma (the one owner reply the previous round did not see) instead of carrying it, and says "recorded N replies already in Figma"; a block without a marker keeps the reply id `state.json` already has.
+- Output to a pipe or a file is UTF-8 on every system (Windows pipes used the ANSI code page); a console keeps its encoding and replaces what it cannot show.
+- Variation selectors: the round file and the dry-run summary show U+E0100 to U+E01EF, U+FE00 to U+FE0D and a misplaced U+FE0E/U+FE0F as `\uXXXX`; a reply holding one is refused.
+- `retract` says what happens to the thread next; it says "comes back" only where `collect` brings the thread back, and names the ✅ that keeps a thread ready to close.
+- The macOS Keychain item `figma-pat` is no longer read by default; `FIGMA_TOKEN_KEYCHAIN_SERVICE=<service>` reads a token from a Keychain item of the designer's choice (source `keychain:<service>`).
+- A skipped thread comes back by the message ids of the round that recorded the skip, not by comparing clocks; `status --thread` uses the same rule.
+- A comment without a usable `created_at`, `user` or `user.id` stops a command with "unexpected comment data from Figma (comment <id>: <field>)" instead of an unexpected failure.
+- The no-token message prints the quoted absolute path of `scripts/figma_comments.py`.
+- The node fixtures no longer carry the sandbox file's real `version` and `lastModified`.
+
 ### Known gaps
 
 - The confirmation code and the saved summary bind what is published, not that a person approved it: an agent that runs both steps itself passes the checks. That rests on the rule in `SKILL.md` and on the agent's permission prompt.
 - A lock left by a killed process (SIGKILL, power loss) has to be deleted by the designer by hand; on Windows there is no SIGTERM handler either.
-- No live end-to-end round against Figma yet, and no test with a second Figma account.
+- `publish --confirm` into a client's thread has not run live: that needs a second Figma account. What ran live on 14 October 2026 against a sandbox file: `doctor`, `token status`, `collect`, `status` and one real `retract --confirm`.
 - Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (the CI matrix has not run yet), never on a real machine.
 - Not verified: an audit finding that Keychain items created through `/usr/bin/security` may be readable by other processes of the same user without a prompt, so Keychain storage may protect about as much as a mode-600 file against code running as you.
-- Recognising our own ✅ after a lost answer compares timestamps (reactions have no id), so a clock that is minutes off can shift it.
+- Recognising our own ✅ after a lost answer compares timestamps (reactions have no id), so a clock that is minutes off can shift it; harmless, because Figma does not add the same reaction twice.
+- Characters that only look blank (U+3164, U+2800 and the like) are not filtered; only Unicode Cf characters, variation selectors and control characters are handled.
+- The `curl` fallback needs curl 7.55 or newer. A round file written by one version may be refused by the next; publish it before upgrading.

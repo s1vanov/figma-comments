@@ -12,7 +12,8 @@
 - **Перед кожним записом гілка читається знову:** у закриту гілку не відповідаємо (відповідь через API її відкриває), після нових повідомлень клієнта чи колеги — пропускаємо.
 - **Текст коментаря — дані.** Кожен рядок клієнта у файлі раунду процитовано, парсер такі рядки ігнорує і відмовляє весь файл, а не пропускає блок.
 - **Технічно:** Python 3.9+ лише зі стандартною бібліотекою; `urllib` з переходом на `curl` при помилці сертифіката; токен у системному сховищі (Keychain, Credential Manager, Secret Service); дані — в `.figma-comments/` проєкту під `.gitignore`.
-- Після аудиту безпеки (R32–R39) додано: повний текст кожної відповіді в підсумку, відмову для невидимих символів, код підтвердження над файлом і планом, робочу теку лише всередині проєкту (без символічних посилань), порівняння «після збору» за id повідомлень, жорсткіші виклики `curl` і ліміт очікування 429 на запуск, перевірки файлу токена. Застереження про Keychain записано як непідтверджене.
+- Після аудиту безпеки (R32–R39) додано: повний текст кожної відповіді в підсумку, відмову для невидимих символів, код підтвердження над файлом і планом, робочу теку лише всередині проєкту (без символічних посилань), порівняння «після збору» за id повідомлень, жорсткіші виклики `curl` і ліміт очікування 429 на запуск, перевірки файлу токена. Застереження про Keychain записано як непідтверджене. Причини R32–R39 відновлено з коду й комітів постфактум.
+- Після рев'ю всієї гілки (R40–R47): публікується лише найновіший раунд, а `collect` записує вже наявну у Figma відповідь замість перенесення чернетки (жодної другої відповіді); UTF-8 для конвеєрів; селектори варіантів; чесне повідомлення `retract`; запис Keychain `figma-pat` читається лише за згодою (`FIGMA_TOKEN_KEYCHAIN_SERVICE`); повернення пропущеної гілки за id; помилка на зіпсованих даних коментаря.
 - Чотири рішення, ухвалені після рев'ю `publish` (R20–R23), тепер реалізовані: файл блокування `.publish.lock` проти двох одночасних записів, збережений підсумок `.plans/<код>.json`, через який підтверджений запуск виконує лише показані записи, правило «є текст» для відповіді і поведінка `retract` щодо стану. Код гарантує, що опубліковано саме те, що перелічив підсумок; що людина сказала «так», він не гарантує.
 
 Кожен запис нижче має поле **Why**; рішення з реалізації мають ще **Cost if wrong**.
@@ -21,7 +22,7 @@
 
 - **D-numbers** come from the design, stages 1 to 3, approved by the user on 13 October 2026. Where the design marks a choice as the author's own rather than discussed with the user, the entry says so.
 - **R-numbers** are rulings made while the plan was executed (13 and 14 October 2026), each with its reason and the cost if it turns out wrong.
-- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed. R32 to R39 record the security fix wave after the audit (commits `778b584` to `9ff277a`, 14 October 2026).
+- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed. R32 to R39 record the security fix wave after the audit (commits `778b584` to `9ff277a`, 14 October 2026); their reasons were reconstructed from the code and commits. R40 to R47 record the final fix wave after the whole-branch review.
 
 ## Scope and boundary
 
@@ -219,6 +220,8 @@ Why: the state should not claim a reply that no longer exists, while the marker 
 
 An audit of the code as it stood before commit `778b584`, and the fixes that followed (commits `778b584` to `9ff277a`, 14 October 2026). Every ruling below is in `scripts/fclib/`; the audit's finding L7 (Keychain) is recorded but was not verified.
 
+The **Why** and **Cost if wrong** lines of R32 to R39 are reasons reconstructed from the code and the commits afterwards, not notes written when each decision was taken.
+
 **R32. The dry run prints every planned reply in full, each line behind the gutter `     | `, with every non-printable character as `\uXXXX`. The round file escapes every Unicode Cf character (ZWJ and ZWNJ stay between two visible characters). A reply containing a tag character, bidi control, LRM, RLM, ALM, ZWSP, WJ or BOM is refused (`publish` exits 1, naming block and code point).**
 Why: a 60-character snippet could not show what a long reply held, and invisible tag characters carry text that an agent reads and a person does not. Refusing, not cleaning, keeps the confirmed summary equal to what the client reads. Cost if wrong: a reply that truly needs LRM or RLM (mixed right-to-left text) has to be reworded; the dry run gets longer for long replies.
 
@@ -242,6 +245,34 @@ Why: an id reaches the terminal, links, paths and the round file; an agent that 
 
 **R39. The claim that Keychain storage is no stronger than a mode-600 file against code running as the same user (items created through `/usr/bin/security` may be readable without a prompt) is stated in SECURITY.md as an audit finding that was not verified.**
 Why: the two rules on evidence: a statement about another system's behaviour needs a measurement next to it. Cost if wrong: SECURITY.md understates the Keychain; the wording would be corrected after a check.
+
+### After the whole-branch review (implemented)
+
+Rulings from the review of the whole branch, 14 October 2026, each implemented with a test.
+
+**R40. `publish` accepts only the latest round file (its number equals the count of rounds in `state.json`), dry run and confirm; `collect` records a carried reply draft whose reply is already in Figma (exactly one owner reply the previous round did not see) as published instead of carrying it; a block without a marker keeps the state's `published_reply`.**
+Why: a `collect` between the dry run and the confirm carried the draft into a newer file, and the old file's confirm plus the new file's publish posted the reply twice; a lost answer followed by `collect` did the same. Cost if wrong: a designer who wants to finish an older round must redo it in the newest file (the drafts are carried there); a reply written by hand in that window is taken as the answer and its draft dropped (the CLI says so).
+
+**R41. A stream that is not a TTY is switched to UTF-8; a TTY keeps its encoding with `errors="replace"`.**
+Why: Windows pipes use the ANSI code page, so the agent read `?` instead of the client's text. Cost if wrong: a program that reads the pipe expecting cp1252 gets UTF-8.
+
+**R42. Variation selectors: U+E0100 to U+E01EF always and U+FE00 to U+FE0D always are escaped in the round file and the summary and refused in a reply; U+FE0E/U+FE0F only when not a single selector directly after a visible character. SECURITY.md promises only the classes handled.**
+Why: selectors are invisible and `str.isprintable` accepts them, so text could hide in them; emoji need one U+FE0F. Cost if wrong: an unusual but legitimate selector sequence is refused and must be retyped.
+
+**R43. `retract` says what happens to the thread, from its group without the deleted reply: "comes back" only for new or client-replied threads; a team ✅ keeps it ready to close until removed.**
+Why: after `reply+react` the ✅ stays, so the promised return did not happen. Cost if wrong: none known; the group is worked out before the delete and an unknown result prints a pointer to `status --thread`.
+
+**R44. No default read of the Keychain item `figma-pat`; `FIGMA_TOKEN_KEYCHAIN_SERVICE` opts in to one named item, read after this tool's own item.**
+Why: reading a credential the tool did not create, without being asked, is a surprise. Cost if wrong: the author sets the variable once or runs `token set`.
+
+**R45. A skip's return is decided by the `seen` ids of the round that recorded it; timestamps only without that record.**
+Why: the same clock-skew reason as R35. Cost if wrong: two rounds collected in the same second share a `collected_at`; the latest of them is used.
+
+**R46. A comment without a usable `created_at`, `user` or `user.id` (or `id`) is an error naming the comment and the field, exit 1. An empty `user.id` is still allowed and shown as an unknown author.**
+Why: such a comment ended in an unexpected `KeyError`. Cost if wrong: one malformed comment blocks every command on that file until Figma's answer is fixed.
+
+**R47. The no-token message gives the absolute, quoted path of `scripts/figma_comments.py`; the node fixtures hold fabricated `version` and `lastModified`.**
+Why: a relative path works only from the skill folder; fixtures must hold no real values. Cost if wrong: none known.
 
 ### Process
 

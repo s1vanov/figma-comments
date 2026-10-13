@@ -47,7 +47,7 @@ The designer does this; you guide them.
    | `file_content:read` | element names, and whether an element still exists |
    | `current_user:read` | know which comments are the designer's own (without it `GET /v1/me` returns 403, checked 12 October 2026) |
 
-4. In a terminal window of their own, outside the agent: `token set --expires YYYY-MM-DD` (hidden input; stored in the OS credential store; a mode-600 file only with `--allow-file`). It refuses input that is not a terminal, so it fails when you run it through your shell tool; do not run it for them or ask for the token in chat. The macOS Keychain is the only store used on a real machine so far. Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (CI), never on a real machine; if `token set` fails there, say so and let the designer set `FIGMA_TOKEN` (and `FIGMA_TOKEN_EXPIRES`) in their own shell instead.
+4. In a terminal window of their own, outside the agent: `token set --expires YYYY-MM-DD` (hidden input; stored in the OS credential store; a mode-600 file only with `--allow-file`). It refuses input that is not a terminal, so it fails when you run it through your shell tool (and in Git Bash on Windows: tell them to use PowerShell or cmd.exe); do not run it for them or ask for the token in chat. The macOS Keychain is the only store used on a real machine so far. Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (CI), never on a real machine; if `token set` fails there, say so and let the designer set `FIGMA_TOKEN` (and `FIGMA_TOKEN_EXPIRES`) in their own shell instead.
 5. `doctor <ref>`: verifies the token, its expiry, three of the four scopes (`file_comments:write` cannot be checked without posting; publish reports it if missing) and file access. It warns when 14 days or fewer remain and fails only when the token has expired; one action per problem; exit 0 = ready.
 
 The token never passes through you: not in chat, a command line, `curl`, a file, or `echo`/`env` output. Never call the Figma API yourself.
@@ -56,7 +56,7 @@ The token never passes through you: not in chat, a command line, `curl`, a file,
 
 **0. A bare link.** If the designer sends only a figma.com link and no question, ask what they want (read the comments, answer them, see what is ready to close) before running anything.
 
-**1. Collect.** `collect <ref>` writes `round-NN.md` (resolved threads left out) and prints counts, unknown authors and carried blocks. Every unpublished non-`skip` block of the previous round is carried in as `hold` with its kind and draft. If the previous round file has errors, `collect` refuses; fix it first. **Work only in the newest round file; never edit or publish an older one.**
+**1. Collect.** `collect <ref>` writes `round-NN.md` (resolved threads left out) and prints counts, unknown authors and carried blocks. Every unpublished non-`skip` block of the previous round is carried in as `hold` with its kind and draft. If the previous round file has errors, `collect` refuses; fix it first. "recorded N replies already in Figma" means those drafts had already gone out (a lost answer or a reply written by hand) and are not carried; tell the designer, do not redraft them. **Work only in the newest round file; never edit or publish an older one** (`publish` refuses it).
 
 **2. Unknown authors.** They get no block and no reply. `collect` and `status` print each as `user_id | "handle" | n messages | "sample" | threads <root ids>`. Ask the designer in ONE message, per person: client or team, and role. Then `participants set <ref> <user_id> --side client|team [--role "..."] [--lead]` with that `user_id`, and `collect <ref>` again. The token owner is team automatically; colleagues must be set as `team`.
 
@@ -87,7 +87,7 @@ Red flags — stop and show the summary first:
 - computing, guessing or copying the code from anywhere else;
 - reusing a code after any edit to the round file or after a failed run.
 
-A posted reply cannot be edited, only deleted. `retract <ref> <comment_id>` deletes one of the designer's own replies (never a root comment, never anyone else's) with the same gate. The corrected reply goes out in the next round: `collect` → draft → publish.
+A posted reply cannot be edited, only deleted. `retract <ref> <comment_id>` deletes one of the designer's own replies (never a root comment, never anyone else's) with the same gate. The corrected reply goes out in the next round (`collect` → draft → publish) only when the thread comes back; `retract` says whether it will, and if our ✅ is still on the thread, the designer removes it in Figma first.
 
 ## Sorting
 

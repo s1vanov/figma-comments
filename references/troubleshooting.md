@@ -49,6 +49,10 @@ Python from python.org ships without root certificates until "Install Certificat
 
 Do not work around certificate errors with your own `curl -k` or by disabling verification.
 
+## Windows: `token set` refuses in Git Bash
+
+Git Bash (mintty) connects Python to a pipe, not a terminal, so `token set` refuses ("needs a terminal") even when the designer types in it. Run `token set` in PowerShell or cmd.exe instead (`py "<skill_dir>\scripts\figma_comments.py" token set --expires YYYY-MM-DD` works in both), or set `FIGMA_TOKEN` and `FIGMA_TOKEN_EXPIRES` in the designer's own shell.
+
 ## Windows: `python3` not found or opens the Microsoft Store
 
 Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `python3` on Windows is often a Store stub. If there is no `py` either, try `python` once `python --version` shows 3.9 or newer. The token goes into Windows Credential Manager (not yet run on a real machine, see above).
@@ -59,7 +63,7 @@ Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `pytho
 
 ## Commands return fixture data or no real comments
 
-`FIGMA_COMMENTS_REPLAY` is a test hook: when set, the CLI reads recorded JSON files from that directory instead of calling Figma and looks up no token. It must not be set in real use. Every command also prints `WARNING: FIGMA_COMMENTS_REPLAY is set (...)` on stderr and as the first line of its stdout; if you see that line, stop and tell the designer. Check without printing other variables: `echo "${FIGMA_COMMENTS_REPLAY:-unset}"` (PowerShell: `echo $env:FIGMA_COMMENTS_REPLAY`). If it is set, unset it (macOS/Linux: `unset FIGMA_COMMENTS_REPLAY FIGMA_COMMENTS_REPLAY_FAIL`; PowerShell: `Remove-Item Env:FIGMA_COMMENTS_REPLAY, Env:FIGMA_COMMENTS_REPLAY_FAIL -ErrorAction SilentlyContinue`) and run `collect` again.
+`FIGMA_COMMENTS_REPLAY` is a test hook: when set, the CLI reads recorded JSON files from that directory instead of calling Figma and looks up no token. It must not be set in real use. Every command also prints `WARNING: FIGMA_COMMENTS_REPLAY is set (...)` on stderr and as the first line of its stdout; if you see that line, stop and tell the designer. Check without printing other variables: `echo "${FIGMA_COMMENTS_REPLAY:-unset}"` (PowerShell: `echo $env:FIGMA_COMMENTS_REPLAY`; cmd.exe: `echo %FIGMA_COMMENTS_REPLAY%`, which prints the name back when it is unset). If it is set, unset it (macOS/Linux: `unset FIGMA_COMMENTS_REPLAY FIGMA_COMMENTS_REPLAY_FAIL`; PowerShell: `Remove-Item Env:FIGMA_COMMENTS_REPLAY, Env:FIGMA_COMMENTS_REPLAY_FAIL -ErrorAction SilentlyContinue`; cmd.exe: `set FIGMA_COMMENTS_REPLAY=` and `set FIGMA_COMMENTS_REPLAY_FAIL=`) and run `collect` again.
 
 ## `publish` refuses the round file
 
@@ -71,7 +75,19 @@ The confirmation code is bound to the round file's exact bytes and to the saved 
 
 ## `publish` refuses a reply because of an invisible character
 
-A reply that holds a tag character, bidirectional control, LRM, RLM, ALM, zero-width space, word joiner or byte-order mark is not published. The message names the block and the code point (for example `U+200B`), and nothing was sent. The usual source is text pasted from a web page or a chat. Remove the character from the reply (retype that word if it is not visible), then run `publish` again. A zero-width joiner or non-joiner is allowed.
+A reply that holds a tag character, bidirectional control, LRM, RLM, ALM, zero-width space, word joiner, byte-order mark or a variation selector out of place (U+E0100 to U+E01EF, U+FE00 to U+FE0D, or U+FE0E/U+FE0F that does not directly follow a visible character) is not published. The message names the block and the code point (for example `U+200B`), and nothing was sent. The usual source is text pasted from a web page or a chat. Remove the character from the reply (retype that word if it is not visible), then run `publish` again. A zero-width joiner or non-joiner is allowed.
+
+## "this is round NN but the latest is round MM"
+
+`publish` accepts only the newest round file. A `collect` ran after this file was made and carried its unpublished drafts into the newer file, so publishing the older one could answer a thread twice. Nothing was sent. Open the newest `round-NN.md`, check the carried blocks there (their drafts are kept, the action is back to `hold`), set the actions again and run `publish` on that file.
+
+## `collect` says "recorded N replies already in Figma"
+
+A draft that was about to be carried already has its reply in Figma: exactly one reply by the token owner that the previous round had not seen (a `publish` whose answer was lost, or a reply the designer wrote by hand). It is recorded as published and its draft is not carried, so it is not posted twice. For a `reply+react` block only the ✅ is left; set that block to `react` in the new round. If the reply in Figma is not the one the designer wanted, `retract` it and write the new one in the next round.
+
+## "unexpected comment data from Figma"
+
+A comment in the API answer has no usable `created_at`, author (`user`, `user.id`) or id. The message names the comment and the field. Nothing was written. Run the command again in a minute; if it stays, Figma changed its answer and the tool needs an update; report it with the field name, not the comment text.
 
 ## "is a symbolic link" or "resolves outside the project folder"
 
