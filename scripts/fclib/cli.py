@@ -142,15 +142,32 @@ def _unknown_lines(unknown: List[AuthorSummary], show_all: bool, hint: str) -> L
     return _cut(rows, show_all, hint)
 
 
+def _invalid_ids_line(count: int) -> List[str]:
+    if not count:
+        return []
+    return ["warning: %d comment%s with an invalid id %s skipped (not shown)"
+            % (count, "" if count == 1 else "s", "was" if count == 1 else "were")]
+
+
 def _today() -> date:
     return date.today()
+
+
+def _replay_banner() -> None:
+    """Replay mode: the warning goes to stderr AND is the first line of stdout, for every
+    command, so an agent that reads only one stream still sees that nothing reached Figma."""
+    replay = os.environ.get(REPLAY_ENV)
+    if replay:
+        banner = "WARNING: %s is set (%s); using offline fixtures, nothing reaches Figma." % (
+            REPLAY_ENV, _clean(replay))
+        print(banner, file=sys.stderr)
+        print(banner)
+        sys.stdout.flush()
 
 
 def _make_api(notice: bool = True) -> FigmaAPI:
     replay = os.environ.get(REPLAY_ENV)
     if replay:
-        print("WARNING: %s is set (%s); using offline fixtures, nothing reaches Figma."
-              % (REPLAY_ENV, _clean(replay)), file=sys.stderr)
         transport: Any = ReplayTransport(Path(replay), fail=os.environ.get(REPLAY_FAIL_ENV))
         token = "replay-token"
     else:
@@ -199,6 +216,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     ready = result.groups.get(Group.READY_TO_CLOSE, 0)
     if ready:
         lines.append("Ready to close: %d (links: %s status %s)" % (ready, PROG, ref.file_key))
+    lines.extend(_invalid_ids_line(result.invalid_ids))
     _emit(lines)
     return 0
 
@@ -272,7 +290,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     api = _make_api()
     snap = fetch_snapshot(api, ref, ws)
     if args.thread is not None:
-        _emit(_thread_lines(args, api, ref, snap, ws))
+        _emit(_thread_lines(args, api, ref, snap, ws) + _invalid_ids_line(snap.invalid_ids))
         return 0
     lines = [
         "File %s: %d threads (%s)" % (ref.file_key, len(snap.threads), _counts_line(snap.counts)),
@@ -291,6 +309,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         lines.extend(_cut(links, args.all, "--all shows every link"))
     else:
         lines.append("Ready to close: none")
+    lines.extend(_invalid_ids_line(snap.invalid_ids))
     _emit(lines)
     return 0
 
@@ -793,6 +812,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         code = exc.code
         return code if isinstance(code, int) else (0 if code is None else 2)
     func: Callable[[argparse.Namespace], int] = args.func
+    _replay_banner()
     try:
         return func(args)
     except Terminated as exc:  # SIGTERM while the workspace lock was held

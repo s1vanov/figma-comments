@@ -47,7 +47,7 @@ from .model import (
     unknown_authors,
 )
 from .participants import load_participants
-from .roundfile import _NODE_RE, Block, RoundItem, RoundMeta, RoundParseError, parse_round, render_round
+from .roundfile import _ID_RE, _NODE_RE, Block, RoundItem, RoundMeta, RoundParseError, parse_round, render_round
 from .state import (
     State,
     ThreadState,
@@ -87,6 +87,7 @@ class CollectResult:
     threads: int = 0
     held_resolved: int = 0  # carried threads that were closed meanwhile (entry and draft kept)
     carried_from: Optional[str] = None  # name of the previous round file when it supplied blocks
+    invalid_ids: int = 0  # comments left out because their id is not ASCII digits
 
 
 @dataclass
@@ -98,7 +99,8 @@ class Snapshot:
     people: Dict[str, Participant]
     owner_id: str
     orphans: int
-    comments: List[dict] = field(default_factory=list)  # the flat GET-comments list
+    comments: List[dict] = field(default_factory=list)  # the flat GET-comments list (valid ids only)
+    invalid_ids: int = 0  # comments dropped because their id is not ASCII digits
 
     @property
     def counts(self) -> "Counter[Group]":
@@ -118,8 +120,19 @@ def workspace_path(root: Path, file_key: str) -> Path:
     return check_workspace(root, file_key)
 
 
+def valid_comments(comments: List[dict]) -> Tuple[List[dict], int]:
+    """(comments whose id is ASCII digits, how many were dropped).
+
+    An id is printed, put in links and written into the round file, so one that is not
+    ``[0-9]+`` (terminal escapes, path segments) is never used: the comment is skipped and
+    only counted. Its replies then have no parent and are reported as orphans.
+    """
+    kept = [c for c in comments if isinstance(c, dict) and _ID_RE.fullmatch(str(c.get("id")))]
+    return kept, len(comments) - len(kept)
+
+
 def fetch_snapshot(api: FigmaAPI, ref: FileRef, ws: Path) -> Snapshot:
-    comments = api.comments(ref.file_key)
+    comments, invalid = valid_comments(api.comments(ref.file_key))
     me = api.me()
     owner_id = str(me.get("id") or "") if isinstance(me, dict) else ""
     if not owner_id:
@@ -133,6 +146,7 @@ def fetch_snapshot(api: FigmaAPI, ref: FileRef, ws: Path) -> Snapshot:
         owner_id=owner_id,
         orphans=len(orphan_replies(comments)),
         comments=comments,
+        invalid_ids=invalid,
     )
 
 
@@ -475,4 +489,5 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
         threads=len(snap.threads),
         held_resolved=held_resolved,
         carried_from=carried_from if carried_file else None,
+        invalid_ids=snap.invalid_ids,
     )

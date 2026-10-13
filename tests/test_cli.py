@@ -23,7 +23,7 @@ BANNER = "WARNING: FIGMA_COMMENTS_REPLAY is set (%s); using offline fixtures, no
 
 
 def quiet(err):
-    """stderr without the replay banner."""
+    """stdout or stderr without the replay banner."""
     return "".join(l + "\n" for l in err.splitlines() if not l.startswith("WARNING: FIGMA_COMMENTS_REPLAY"))
 
 
@@ -69,6 +69,29 @@ class CommandTests(CliBase):
         _, blocks = parse_round((self.ws / "round-01.md").read_text(encoding="utf-8"))
         self.assertEqual(len(blocks), 7)
         self.assertEqual(load_state(self.ws).rounds[0]["n"], 1)
+
+    def test_comment_with_an_invalid_id_is_skipped_with_a_warning_and_never_printed(self):
+        put_participants(self.cwd)
+        esc = "\x1b]0;pwned\x07"
+        path = self.replay / "comments.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for c in data["comments"]:
+            if c["id"] == "4200104":  # a ready-to-close root: its link would be printed
+                c["id"] = "4200104" + esc
+            elif c["id"] == "4200110":  # a reply inside a valid thread
+                c["id"] = "../4200110"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        for argv in (("status", KEY), ("collect", KEY), ("status", KEY, "--all")):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual(code, 0, err)
+                self.assertNotIn("\x1b", out + err)
+                self.assertNotIn("pwned", out + err)
+                self.assertNotIn("../4200110", out + err)
+                self.assertIn("warning: 2 comments with an invalid id were skipped (not shown)", out)
+        text = (self.ws / "round-01.md").read_text(encoding="utf-8")
+        self.assertNotIn("pwned", text)
+        self.assertNotIn("4200104", text)
 
     def test_collect_accepts_a_url(self):
         put_participants(self.cwd)
@@ -175,9 +198,29 @@ class ReplayBannerTests(CliBase):
                 code, out, err = self.run_cli(*argv)
                 self.assertEqual(code, 0)
                 self.assertIn(BANNER % self.replay, err)
-                self.assertNotIn("WARNING", out)
+                self.assertEqual(out.splitlines()[0], BANNER % self.replay)
         code, _, err = self.run_cli("participants", "set", KEY, "unknown-1", "--side", "team")
         self.assertIn(BANNER % self.replay, err)
+
+    def test_banner_is_the_first_stdout_line_of_every_command(self):
+        # an agent that reads only stdout must still see that nothing reached Figma
+        put_participants(self.cwd)
+        self.run_cli("collect", KEY)
+        for argv in (("collect", KEY), ("status", KEY), ("status", KEY, "--thread", "4200110"),
+                     ("participants", "list", KEY),
+                     ("participants", "set", KEY, "client-9", "--side", "client", "--handle", "X"),
+                     ("publish", ".figma-comments/%s/round-01.md" % KEY),
+                     ("retract", KEY, "4200105"), ("doctor",), ("token", "status")):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual(out.splitlines()[0], BANNER % self.replay, (code, out, err))
+                self.assertEqual(err.count(BANNER % self.replay), 1)
+
+    def test_banner_on_stdout_also_when_the_command_fails(self):
+        (self.replay / "me.json").unlink()
+        code, out, err = self.run_cli("status", KEY)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, BANNER % self.replay + "\n")
 
     def test_banner_absent_without_replay(self):
         with mock.patch.object(cli, "get_token", side_effect=TokenMissing("no token")):
@@ -225,7 +268,7 @@ class CarryOutputTests(CliBase):
         path = self.ws / "round-01.md"
         path.write_text(path.read_text(encoding="utf-8").replace("\nkind:", "\nstray\nkind:", 1), encoding="utf-8")
         code, out, err = self.run_cli("collect", KEY)
-        self.assertEqual((code, out), (1, ""))
+        self.assertEqual((code, quiet(out)), (1, ""))
         self.assertIn("round-01.md has errors (line", quiet(err))
         self.assertIn("fix it or move it aside before collecting", err)
         self.assertFalse((self.ws / "round-02.md").exists())
@@ -248,14 +291,14 @@ class ErrorTests(CliBase):
 
     def test_bad_reference_is_exit_1_without_traceback(self):
         code, out, err = self.run_cli("collect", "https://example.com/design/x")
-        self.assertEqual((code, out), (1, ""))
+        self.assertEqual((code, quiet(out)), (1, ""))
         self.assertIn("not a Figma file reference", err)
         self.assertNotIn("Traceback", err)
 
     def test_missing_token_is_exit_1(self):
         with mock.patch.object(cli, "get_token", side_effect=TokenMissing("No Figma token. Run: token set")):
             code, out, err = self.run_cli("status", KEY, replay=False)
-        self.assertEqual((code, out), (1, ""))
+        self.assertEqual((code, quiet(out)), (1, ""))
         self.assertIn("No Figma token", err)
 
     def test_http_status_error_is_exit_1(self):
@@ -263,8 +306,8 @@ class ErrorTests(CliBase):
         for exc in (FigmaHTTPError(403, "Invalid token"), TransportError("curl exited with 7")):
             with self.subTest(exc=exc), mock.patch.object(cli, "_make_api", side_effect=exc):
                 code, out, err = self.run_cli("status", KEY)
-                self.assertEqual((code, out), (1, ""))
-                self.assertTrue(err.startswith("error: "))
+                self.assertEqual((code, quiet(out)), (1, ""))
+                self.assertTrue(quiet(err).startswith("error: "))
                 self.assertNotIn("Traceback", err)
         with mock.patch.object(cli, "_make_api", side_effect=FigmaHTTPError(403, "Invalid token")):
             self.assertIn("HTTP 403", self.run_cli("collect", KEY)[2])
@@ -272,7 +315,7 @@ class ErrorTests(CliBase):
     def test_missing_fixture_is_exit_1(self):
         (self.replay / "me.json").unlink()
         code, out, err = self.run_cli("status", KEY)
-        self.assertEqual((code, out), (1, ""))
+        self.assertEqual((code, quiet(out)), (1, ""))
         self.assertIn("me.json", err)
         self.assertNotIn("Traceback", err)
 
@@ -280,9 +323,9 @@ class ErrorTests(CliBase):
         boom = RuntimeError("secret-looking text figd_abc123")
         with mock.patch.object(cli, "_make_api", side_effect=boom):
             code, out, err = self.run_cli("status", KEY)
-            self.assertEqual((code, out), (1, ""))
+            self.assertEqual((code, quiet(out)), (1, ""))
             self.assertEqual(
-                err.strip(),
+                quiet(err).strip(),
                 "error: unexpected failure (RuntimeError); run with FIGMA_COMMENTS_DEBUG=1 for a traceback",
             )
             self.assertNotIn("figd_", err)
@@ -347,7 +390,7 @@ class ThreadLookupTests(CliBase):
 
     def thread(self, comment_id, *extra):
         code, out, err = self.run_cli("status", KEY, "--thread", comment_id, *extra)
-        return code, out, quiet(err)
+        return code, quiet(out), quiet(err)
 
     def test_unknown_author_thread_says_who_and_how_to_classify(self):
         put_participants(self.cwd)
