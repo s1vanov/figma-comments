@@ -8,7 +8,7 @@ class NormalizeOutgoingTests(unittest.TestCase):
     def test_normalize(self):
         self.assertEqual(normalize_outgoing("**Done** and *ok* ~~x~~ __y__"), "Done and ok x y")
         self.assertEqual(normalize_outgoing("[spec](https://e.com)"), "spec (https://e.com)")
-        self.assertEqual(normalize_outgoing("a b c"), "a\nb\nc")
+        self.assertEqual(normalize_outgoing("a\u2028b\u2029c"), "a\nb\nc")
         self.assertEqual(normalize_outgoing("5 * 3 = 15"), "5 * 3 = 15")
         self.assertEqual(normalize_outgoing("- one\n- two"), "- one\n- two")
         with self.assertRaises(ValueError):

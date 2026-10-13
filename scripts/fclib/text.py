@@ -12,7 +12,7 @@ _INLINE_PATTERNS = (
     re.compile(r"(?<!\w)_(?=\S)(.+?)(?<=\S)_(?!\w)"),
     re.compile(r"~~(?=\S)(.+?)(?<=\S)~~"),
 )
-_LINE_BREAK_RE = re.compile(r"\r\n|\r| | ")
+_LINE_BREAK_RE = re.compile(r"\r\n|\r|\u2028|\u2029")
 _HAS_TEXT_RE = re.compile(r"\w")
 
 
