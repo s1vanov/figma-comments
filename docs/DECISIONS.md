@@ -8,10 +8,11 @@
 
 - **Межа.** Скіл лише читає коментарі, готує їх агентові і публікує погоджені відповіді та ✅. Макет він не править ніколи.
 - **Єдиний шлях до коментарів** — REST API з персональним токеном: офіційний MCP Figma і Plugin API коментарів не бачать.
-- **Нічого без погодження.** Запис у Figma — лише через `publish --confirm` з кодом, обчисленим з точних байтів файлу раунду. Код гарантує «опубліковано те, що було у файлі підсумку»; що «так» сказала людина, тримається на правилі SKILL.md і на запиті дозволу агента.
+- **Нічого без погодження.** Запис у Figma — лише через `publish --confirm` з кодом, обчисленим з точних байтів файлу раунду і списку записів підсумку. Код гарантує «опубліковано те, що було у файлі підсумку»; що «так» сказала людина, тримається на правилі SKILL.md і на запиті дозволу агента.
 - **Перед кожним записом гілка читається знову:** у закриту гілку не відповідаємо (відповідь через API її відкриває), після нових повідомлень клієнта чи колеги — пропускаємо.
 - **Текст коментаря — дані.** Кожен рядок клієнта у файлі раунду процитовано, парсер такі рядки ігнорує і відмовляє весь файл, а не пропускає блок.
 - **Технічно:** Python 3.9+ лише зі стандартною бібліотекою; `urllib` з переходом на `curl` при помилці сертифіката; токен у системному сховищі (Keychain, Credential Manager, Secret Service); дані — в `.figma-comments/` проєкту під `.gitignore`.
+- Після аудиту безпеки (R32–R39) додано: повний текст кожної відповіді в підсумку, відмову для невидимих символів, код підтвердження над файлом і планом, робочу теку лише всередині проєкту (без символічних посилань), порівняння «після збору» за id повідомлень, жорсткіші виклики `curl` і ліміт очікування 429 на запуск, перевірки файлу токена. Застереження про Keychain записано як непідтверджене.
 - Чотири рішення, ухвалені після рев'ю `publish` (R20–R23), тепер реалізовані: файл блокування `.publish.lock` проти двох одночасних записів, збережений підсумок `.plans/<код>.json`, через який підтверджений запуск виконує лише показані записи, правило «є текст» для відповіді і поведінка `retract` щодо стану. Код гарантує, що опубліковано саме те, що перелічив підсумок; що людина сказала «так», він не гарантує.
 
 Кожен запис нижче має поле **Why**; рішення з реалізації мають ще **Cost if wrong**.
@@ -20,7 +21,7 @@
 
 - **D-numbers** come from the design, stages 1 to 3, approved by the user on 13 October 2026. Where the design marks a choice as the author's own rather than discussed with the user, the entry says so.
 - **R-numbers** are rulings made while the plan was executed (13 and 14 October 2026), each with its reason and the cost if it turns out wrong.
-- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed.
+- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed. R32 to R39 record the security fix wave after the audit (commits `778b584` to `9ff277a`, 14 October 2026).
 
 ## Scope and boundary
 
@@ -59,7 +60,7 @@ Why: one meaning per signal, so the client and the "ready to close" list read it
 **D11. Actions: reply, react, reply+react, hold, skip.** `hold` carries the block into the next round with kind and draft; `skip` means deliberately no answer. (Author's choice.)
 Why: an edit is usually answered later than it is sorted; `hold` keeps the draft without publishing it.
 
-**D12. Publish runs in two steps with a code (variant A, the user's decision on 13 October 2026).** `publish <file>` prints the summary and a code computed from the exact content (the implementation hashes the round file's bytes); only `publish <file> --confirm <code>` writes; no code, or a file changed after the summary, means refusal.
+**D12. Publish runs in two steps with a code (variant A, the user's decision on 13 October 2026).** `publish <file>` prints the summary and a code computed from the exact content (the implementation hashes the round file's bytes and, since R33, the saved summary too); only `publish <file> --confirm <code>` writes; no code, or a file changed after the summary, means refusal.
 Why: the code guarantees "what is published is what was in the summary": the code binds the file's bytes and, since R21, the confirm run performs only the writes the summary listed. That a person said yes rests on SKILL.md (the agent shows the summary and waits for the designer) and on the agent's permission prompt before the command. SECURITY.md promises exactly that and no more.
 
 **D13. Closing is manual.** The skill gives links that open each comment; a person resolves it. The link format was checked on 12 October 2026.
@@ -99,7 +100,7 @@ Why: the draft may answer a question the client has since changed.
 **D23. Plain text only: strip Markdown before posting, turn U+2028 into `\n`. Always read with `as_md=true`.**
 Why: Markdown is not rendered in API comments; U+2028 shows as a space; without `as_md` the client's formatting is lost (all measured).
 
-**D24. Idempotency by message time, not by text: before a reply, if anyone from the team wrote in the thread after the collection time, skip and show "already answered".** (Author's choice.)
+**D24. Idempotency by message, not by text: before a reply, if anyone from the team wrote in the thread after the round was collected, skip and show "already answered".** (Author's choice.) Since R35 "after" is decided by message id, not by comparing clocks.
 Why: Figma changes text on save (🐧 becomes `:penguin:`), so comparing texts is unreliable; the extra message may be our interrupted run, a colleague with their own token, or a reply typed in the interface. A resumed run continues without duplicates.
 
 **D25. A reply carries only the root's `comment_id`, no `client_meta`.**
@@ -128,7 +129,7 @@ Why: the skill must know the token owner's id; without `current_user:read`, `GET
 **D32. Input: a full file link (branch links included) or a bare key.**
 Why: designers paste links; a branch link must address the branch.
 
-**D33. Distribution as an Agent Skills folder (`SKILL.md`, `scripts/`, `references/`); README with install steps for Claude Code, Codex, Cursor, Gemini CLI and Antigravity.**
+**D33. Distribution as an Agent Skills folder (`SKILL.md`, `scripts/`, `references/`); README with an install path for Claude Code, the only agent where it was verified, and a generic instruction ("an agent with shell access that can read SKILL.md") for the others.** (Changed on 14 October 2026: the design listed install paths for Codex, Cursor, Gemini CLI and Antigravity, which could not be verified.)
 Why: one folder that any skill-aware agent can load, and plain shell use for the others.
 
 **D34. English for the tool and the main docs, a Ukrainian README; replies to the client in the client's language. MIT licence.**
@@ -213,6 +214,34 @@ Why: before this, an emoji-only reply was refused as empty. Cost: none known.
 
 **R23. `retract` keeps the round file's published marker and clears `state.threads[root].published_reply` when it equals the deleted id; the corrected reply goes out in the next round.**
 Why: the state should not claim a reply that no longer exists, while the marker records what was posted in that round. Cost: none known.
+
+### After the security audit (implemented)
+
+An audit of the code as it stood before commit `778b584`, and the fixes that followed (commits `778b584` to `9ff277a`, 14 October 2026). Every ruling below is in `scripts/fclib/`; the audit's finding L7 (Keychain) is recorded but was not verified.
+
+**R32. The dry run prints every planned reply in full, each line behind the gutter `     | `, with every non-printable character as `\uXXXX`. The round file escapes every Unicode Cf character (ZWJ and ZWNJ stay between two visible characters). A reply containing a tag character, bidi control, LRM, RLM, ALM, ZWSP, WJ or BOM is refused (`publish` exits 1, naming block and code point).**
+Why: a 60-character snippet could not show what a long reply held, and invisible tag characters carry text that an agent reads and a person does not. Refusing, not cleaning, keeps the confirmed summary equal to what the client reads. Cost if wrong: a reply that truly needs LRM or RLM (mixed right-to-left text) has to be reworded; the dry run gets longer for long replies.
+
+**R33. The confirm code is the first 10 hex of SHA-256(round-file bytes + NUL + canonical plan JSON). `--confirm` loads the saved summary named by the code and recomputes the code; a missing summary and a changed file or summary are two separate exit-2 messages. A dry run deletes earlier summaries made for the same file bytes.**
+Why: with the code over the bytes only, an edited or swapped `.plans/<code>.json` would not be noticed, and the confirm run would obey it. Cost if wrong: any hand edit of the plan file forces a new dry run, which is the intended effect.
+
+**R34. The workspace is pinned to the project folder: a symlinked `.figma-comments` or `.figma-comments/<key>`, or one that resolves outside the project, is refused by `collect`, `status`, `participants`, `publish` and `retract`; `publish` also requires the round file to be in `.figma-comments/<key>/` of the current folder.**
+Why: a planted link would redirect where client data, state and the lock are read and written, and a round file elsewhere would take a different workspace's state. Cost if wrong: a designer who keeps `.figma-comments` as a link into a synced folder is refused and has to use a real folder. The check does not stop a program that swaps folders during a run.
+
+**R35. "Written after collect" and lost-reply recovery are decided by message id: `collect` stores `rounds[n].seen` (ids per thread), and an id not in it is newer. A state without `seen` falls back to `created_at >= collected_at`. Recognising our own ✅ still compares timestamps, because reactions have no id.**
+Why: comparing Figma's clock with the designer's computer clock made a skewed clock skip good writes or allow stale ones. Cost if wrong: a thread absent from an existing `seen` counts as all-new and its write is skipped; the ✅ comparison keeps the clock dependency (a known limit).
+
+**R36. HTTP hardening: the `curl` fallback resolves `curl` once on `PATH` and runs with `-q`, `--proto =https`, `--proto-redir =https`, `--max-redirs 0`, `--tlsv1.2`. All `Retry-After` waiting in one run is capped at 600 seconds (a single wait at 300 seconds, at most 5 retries). Any exception that could carry the token is redacted.**
+Why: `~/.curlrc` can add a proxy, a trace file or a redirect policy that would see the token header; unbounded waiting blocks the agent's shell. Cost if wrong: a very old curl without `--tlsv1.2` fails with a curl error instead of falling back silently.
+
+**R37. The opt-in token file is read only if it is a regular file owned by the user, neither it nor its directory is a symlink, and no group or other permission bit is set (the message says `chmod 600`); it is written with `O_NOFOLLOW`.**
+Why: a file other users can read or replace is not a safe place for the token. Cost if wrong: a designer with a loose file gets a refusal and fixes the mode.
+
+**R38. A comment whose id from the API is not made of ASCII digits is skipped with a warning. The replay-mode warning is also the first line of stdout.**
+Why: an id reaches the terminal, links, paths and the round file; an agent that reads only stdout would otherwise miss that it works on fixtures. Cost if wrong: such a comment is invisible (counted in the warning).
+
+**R39. The claim that Keychain storage is no stronger than a mode-600 file against code running as the same user (items created through `/usr/bin/security` may be readable without a prompt) is stated in SECURITY.md as an audit finding that was not verified.**
+Why: the two rules on evidence: a statement about another system's behaviour needs a measurement next to it. Cost if wrong: SECURITY.md understates the Keychain; the wording would be corrected after a check.
 
 ### Process
 

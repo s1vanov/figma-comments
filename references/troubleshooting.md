@@ -14,6 +14,12 @@ A set `FIGMA_TOKEN` wins over the stored token. If `token status` shows source `
 
 On Linux without a Secret Service (`secret-tool`), `token set` refuses unless the designer adds `--allow-file`; the file gets mode 600. Windows has no file fallback.
 
+Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests, never on a real machine. If `token set` or the lookup fails there, say so and let the designer set `FIGMA_TOKEN` (and `FIGMA_TOKEN_EXPIRES`) in their own shell instead.
+
+## Token file refused
+
+The opt-in file `~/.config/figma-comments/token.json` is used only if it is a regular file owned by the designer, not a symbolic link (the `figma-comments` config directory too), and has no group or other permission bits. Otherwise the command says why and what to do: `chmod 600 <file>` for loose permissions, or remove the link or the foreign file and run `token set --allow-file` again. The designer does that, not you.
+
 ## Token expired or about to expire
 
 Figma tokens last at most 90 days (Figma settings, checked 13 October 2026). `doctor` and every command warn when 14 days or fewer are left; once it has expired, commands still run with a warning (Figma answers 403) and `doctor` fails. Fix: the designer generates a new token with the same four scopes and runs `token set --expires <new date>`.
@@ -31,7 +37,7 @@ If a scope is missing, the designer creates a new token with all four scopes and
 
 Figma's comment endpoints are Tier 2: 25, 50 or 100 requests per minute depending on the plan, and 5 per minute for View and Collab seats (Figma documentation, read 13 October 2026). Successful responses carry no rate-limit headers, so there is no warning before a 429.
 
-The CLI waits for `Retry-After` itself and retries (up to 5 times). If Figma asks for more than 300 seconds, it stops instead of blocking the shell, with "rate limited: Figma asks to wait N s; try again later". Tell the designer the wait, and re-run later. A publish stopped this way is safe to resume: blocks already posted carry the published marker, and threads with a team reply after collect are skipped. Resume the normal way: `publish <round-file>`, show the new summary, wait for yes, `--confirm` the new code.
+The CLI waits for `Retry-After` itself and retries (up to 5 times). If Figma asks for more than 300 seconds at once, or the waits of one run add up to more than 600 seconds, it stops instead of blocking the shell, with "rate limited: Figma asks to wait N s; try again later" (or "rate limited for too long"). Tell the designer the wait, and re-run later. A publish stopped this way is safe to resume: blocks already posted carry the published marker, and threads with a team reply after collect are skipped. Resume the normal way: `publish <round-file>`, show the new summary, wait for yes, `--confirm` the new code.
 
 ## Link sharing warning
 
@@ -39,13 +45,13 @@ If the file is open to "anyone with the link", every comment link the CLI prints
 
 ## macOS: CERTIFICATE_VERIFY_FAILED
 
-Python from python.org ships without root certificates until "Install Certificates.command" (in the Python folder in Applications) has been run. The CLI notices the certificate error and falls back to the system `curl` automatically; the token goes to curl through stdin, never through its arguments. Nothing to do unless curl is missing or older than 7.55. Then the designer runs "Install Certificates.command" once.
+Python from python.org ships without root certificates until "Install Certificates.command" (in the Python folder in Applications) has been run. The CLI notices the certificate error and falls back to the system `curl` automatically; the token goes to curl through stdin, never through its arguments. The `curl` call ignores `~/.curlrc` (`-q`), allows only HTTPS, follows no redirects and needs TLS 1.2 or newer. Nothing to do unless curl is missing or older than 7.55. Then the designer runs "Install Certificates.command" once.
 
 Do not work around certificate errors with your own `curl -k` or by disabling verification.
 
 ## Windows: `python3` not found or opens the Microsoft Store
 
-Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `python3` on Windows is often a Store stub. The token goes into Windows Credential Manager.
+Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `python3` on Windows is often a Store stub. If there is no `py` either, try `python` once `python --version` shows 3.9 or newer. The token goes into Windows Credential Manager (not yet run on a real machine, see above).
 
 ## macOS: old token still found after `token clear`
 
@@ -53,11 +59,27 @@ Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `pytho
 
 ## Commands return fixture data or no real comments
 
-`FIGMA_COMMENTS_REPLAY` is a test hook: when set, the CLI reads recorded JSON files from that directory instead of calling Figma and looks up no token. It must not be set in real use. Check without printing other variables: `echo "${FIGMA_COMMENTS_REPLAY:-unset}"` (PowerShell: `echo $env:FIGMA_COMMENTS_REPLAY`). If it is set, unset it (macOS/Linux: `unset FIGMA_COMMENTS_REPLAY FIGMA_COMMENTS_REPLAY_FAIL`; PowerShell: `Remove-Item Env:FIGMA_COMMENTS_REPLAY, Env:FIGMA_COMMENTS_REPLAY_FAIL -ErrorAction SilentlyContinue`) and run `collect` again.
+`FIGMA_COMMENTS_REPLAY` is a test hook: when set, the CLI reads recorded JSON files from that directory instead of calling Figma and looks up no token. It must not be set in real use. Every command also prints `WARNING: FIGMA_COMMENTS_REPLAY is set (...)` on stderr and as the first line of its stdout; if you see that line, stop and tell the designer. Check without printing other variables: `echo "${FIGMA_COMMENTS_REPLAY:-unset}"` (PowerShell: `echo $env:FIGMA_COMMENTS_REPLAY`). If it is set, unset it (macOS/Linux: `unset FIGMA_COMMENTS_REPLAY FIGMA_COMMENTS_REPLAY_FAIL`; PowerShell: `Remove-Item Env:FIGMA_COMMENTS_REPLAY, Env:FIGMA_COMMENTS_REPLAY_FAIL -ErrorAction SilentlyContinue`) and run `collect` again.
 
 ## `publish` refuses the round file
 
 The message starts with `line N:`. See [round-file.md](round-file.md), "When publish refuses the file". Fix that line, then run `publish <round-file>` again for a new summary and code.
+
+## `publish --confirm` exits 2: "no saved summary" or "changed since the dry run"
+
+The confirmation code is bound to the round file's exact bytes and to the saved summary of the dry run (`.plans/<code>.json`). "no saved summary for this code ... first" means no dry run made this code, the summary was deleted (a later dry run of the same file, a completed run, or age over 7 days), or the code was mistyped. "the round file or its saved summary changed since the dry run ... again" means the file was edited, even by one character, or the summary was altered. Nothing was sent to Figma. Run `publish <round-file>` without `--confirm`, show the new summary, wait for a new yes, and use the new code.
+
+## `publish` refuses a reply because of an invisible character
+
+A reply that holds a tag character, bidirectional control, LRM, RLM, ALM, zero-width space, word joiner or byte-order mark is not published. The message names the block and the code point (for example `U+200B`), and nothing was sent. The usual source is text pasted from a web page or a chat. Remove the character from the reply (retype that word if it is not visible), then run `publish` again. A zero-width joiner or non-joiner is allowed.
+
+## "is a symbolic link" or "resolves outside the project folder"
+
+`collect`, `status`, `participants`, `publish` and `retract` refuse a workspace whose `.figma-comments` or `.figma-comments/<file_key>` is a symbolic link, or that resolves outside the project folder, and `publish` refuses a round file that is not in `.figma-comments/<file_key>/` of the folder it runs from ("run publish from the project folder"). Check that you are in the project folder; if a link was set up on purpose, the designer replaces it with a real folder. Do not work around the check.
+
+## A warning about a comment with an invalid id
+
+`collect` and `status` print `warning: N comment(s) with an invalid id skipped` when Figma returns a comment id that is not made of digits. Such a comment is left out everywhere. Tell the designer; nothing to fix locally.
 
 ## "another publish, retract or collect seems to be running"
 

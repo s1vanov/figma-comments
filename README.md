@@ -39,7 +39,7 @@ Unfinished blocks carry over into the next round with their kind and draft, so n
 
 The obvious alternative is an MCP server that exposes "list comments" and "post reply" to the agent. Several exist (see below). This skill takes a different shape:
 
-- **The designer approves a file, not a chat message.** Replies are drafted in a round file the designer can edit in any editor. The confirmation code is computed from the exact bytes of that file, so an edit after the summary invalidates the code, and the confirmed run posts only what the summary listed. The code does not prove that a person said yes; see [SECURITY.md](SECURITY.md).
+- **The designer approves a file, not a chat message.** Replies are drafted in a round file the designer can edit in any editor. The confirmation code is computed from the exact bytes of that file and the list of writes in the summary, so an edit to either after the summary invalidates the code, and the confirmed run posts only what the summary listed. The summary shows every reply in full. The code does not prove that a person said yes; see [SECURITY.md](SECURITY.md).
 - **Every write is checked against fresh data.** Before each reply the thread is read again: no reply into a resolved thread (an API reply reopens it), no reply when the client or a colleague wrote after the round was collected.
 - **Client and team are told apart.** A `participants.json` says who is the client and who is the team; comments from an unknown author are held back until the designer says who they are.
 - **Python 3.9+ standard library only**, one command for macOS, Windows and Linux; the token lives in the operating system's credential store, never on a command line.
@@ -71,12 +71,13 @@ Figma's own MCP server has no comment tool (its tools page, read 13 October 2026
   - macOS: the `python3` from the Command Line Tools (`xcode-select --install`) is 3.9 and is enough.
   - Windows: the installer from python.org; run scripts with the `py` launcher. `python3` on Windows is often a Microsoft Store stub.
   - Linux: the distribution's `python3`. To store the token, `secret-tool` (Debian and Ubuntu package: `libsecret-tools`).
+  - If neither `python3` nor `py` exists, `python` works when `python --version` shows 3.9 or newer.
 - A Figma account that can open the file, and a personal access token (see [Get a token](#get-a-token)).
 - An agent with shell access and network access.
 
 ## Install
 
-The skill is a folder: `SKILL.md`, `scripts/`, `references/`. Clone it where your agent looks for skills.
+The skill is a folder: `SKILL.md`, `scripts/`, `references/`. Clone it where your agent looks for skills. Only Claude Code has been tried (see [Limits](#limits)).
 
 ### Claude Code
 
@@ -94,29 +95,9 @@ git clone https://github.com/s1vanov/figma-comments.git "$env:USERPROFILE\.claud
 
 Start a new session and ask something like "reply to the client's comments in this Figma file" with a link.
 
-### Codex CLI and Gemini CLI
+### Other agents
 
-Both read Agent Skills from `~/.agents/skills/`. Link the same folder there instead of cloning twice.
-
-macOS and Linux:
-
-```
-mkdir -p ~/.agents/skills
-ln -s ~/.claude/skills/figma-comments ~/.agents/skills/figma-comments
-```
-
-Windows (PowerShell):
-
-```
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.agents\skills"
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.agents\skills\figma-comments" -Target "$env:USERPROFILE\.claude\skills\figma-comments"
-```
-
-Not yet tested with either tool (see [Limits](#limits)).
-
-### Cursor, Antigravity and other agents
-
-We could not verify where Cursor and Antigravity look for skill folders, so we give no path for them. The skill works with any agent that has shell access and can read SKILL.md: clone the folder anywhere and tell the agent, for example in a project rule, "for anything about Figma comments, read `<path>/figma-comments/SKILL.md` and follow it". Not yet tested in either.
+We have not verified where any other agent looks for skill folders, so we give no install path for them. The skill is meant for an agent with shell access that can read SKILL.md: clone the folder anywhere and tell the agent, for example in a project rule, "for anything about Figma comments, read `<path>/figma-comments/SKILL.md` and follow it". Not yet tried in any of them.
 
 ## Get a token
 
@@ -133,13 +114,13 @@ The designer does this once, in a browser and in their own terminal. The agent o
    | `file_content:read` | element names, whether an element still exists, the file's link-sharing setting |
    | `current_user:read` | know which comments are your own; without it `GET /v1/me` answers 403 (checked 12 October 2026) |
 
-4. In your own terminal, not through the agent:
+4. In a terminal window of your own, outside the agent (not through the agent's shell tool):
 
    ```
    python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py token set --expires 2027-01-10
    ```
 
-   On Windows: `py "$env:USERPROFILE\.claude\skills\figma-comments\scripts\figma_comments.py" token set --expires 2027-01-10`. Use the expiry date Figma showed you. The token is read with hidden input and stored in the macOS Keychain, Windows Credential Manager or the Linux Secret Service. `token set` refuses to run when its input is not a terminal, so an agent cannot pipe a token into it.
+   On Windows: `py "$env:USERPROFILE\.claude\skills\figma-comments\scripts\figma_comments.py" token set --expires 2027-01-10`. Use the expiry date Figma showed you. The token is read with hidden input and stored in the macOS Keychain, Windows Credential Manager or the Linux Secret Service. `token set` refuses to run when its input is not a terminal, so an agent cannot pipe a token into it. Only the macOS Keychain has been used on a real machine; Windows Credential Manager and Linux `secret-tool` have so far been exercised only by automated tests (see [Limits](#limits)).
 
 5. Check everything:
 
@@ -151,7 +132,7 @@ The designer does this once, in a browser and in their own terminal. The agent o
 
 ## Quick start: one round
 
-Run commands from the designer's project folder; the data goes into `.figma-comments/` there. Below, `fc` stands for `python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py` (Windows: `py "<skill folder>\scripts\figma_comments.py"`). In practice you ask the agent and it runs these for you.
+Run commands from the designer's project folder (the agent confirms the folder with you before the first `collect`); the data goes into `.figma-comments/` there. Below, `fc` stands for `python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py` (Windows: `py "<skill folder>\scripts\figma_comments.py"`). In practice you ask the agent and it runs these for you.
 
 ```
 fc collect "https://www.figma.com/design/<file_key>/Landing?node-id=1-3"
@@ -170,11 +151,13 @@ The agent fills in `kind`, `action` and `reply` for each block of the newest rou
 fc publish .figma-comments/<file_key>/round-02.md
 ```
 
-It prints every planned write with its exact text and a line such as `confirm code: 3f9a1c07be`. Nothing has been written to Figma; the plan is saved in `.figma-comments/<file_key>/.plans/` for the next step. After you say yes:
+It prints every planned write with its full exact text (each line of a reply behind a `     | ` gutter, hidden characters as `\uXXXX`) and a line such as `confirm code: 3f9a1c07be`. Nothing has been written to Figma; the plan is saved in `.figma-comments/<file_key>/.plans/` for the next step. Run it from the project folder: a round file outside `.figma-comments/<file_key>/` of that folder is refused. After you say yes:
 
 ```
 fc publish .figma-comments/<file_key>/round-02.md --confirm 3f9a1c07be
 ```
+
+If you edited the round file after the summary, `--confirm` exits with 2 and says so ("the round file or its saved summary changed since the dry run"); with no summary for the code it says "no saved summary for this code". In both cases run `publish` without `--confirm` again and read the new summary.
 
 If the command answers that a lock exists (`.publish.lock`), another `publish`, `retract` or `collect` may be running, or an earlier run was killed. The agent stops and asks you; you delete the lock file yourself, only after checking that nothing is running.
 
@@ -188,13 +171,13 @@ The round file format is described in [references/round-file.md](references/roun
 
 | Command | What it does | Writes to Figma |
 |---|---|---|
-| `collect <ref>` | Reads all comments (`as_md=true`), element names and participants; writes the next `round-NN.md` and records the round in `state.json`. Carries unfinished blocks from the previous round. Refuses if the previous round file does not parse, and never overwrites an existing round file. Holds the workspace lock while it runs. | no |
+| `collect <ref>` | Reads all comments (`as_md=true`), element names and participants; writes the next `round-NN.md` and records the round in `state.json`. Carries unfinished blocks from the previous round. Refuses if the previous round file does not parse, and never overwrites an existing round file. Skips a comment whose id is not made of digits, with a warning. Holds the workspace lock while it runs. | no |
 | `participants list <ref> [--all]` | Shows `participants.json`. The token owner always counts as team. | no |
 | `participants set <ref> <user_id> --side client\|team [--role R] [--lead\|--no-lead] [--handle H]` | Adds or changes one person. The handle is taken from the comments if not given. | no |
 | `status <ref> [--all]` | Group counts, unknown authors (with the root ids of their threads), and the "ready to close" links. | no |
 | `status <ref> --thread <comment_id>` | Finds the thread that holds this comment (root or reply) and prints its root id, element, group, authors with their side, last message, and why it is or is not in the round. Exit 1 if the file has no such comment. | no |
-| `publish <round-file>` | Dry run: the plan (every reply with its exact text, every reaction), what is skipped and why, and the confirmation code. Saves the planned writes to `.plans/<code>.json`. | no |
-| `publish <round-file> --confirm <code>` | Posts the plan if the file is byte-for-byte the one the code was computed from, and only the writes the saved summary listed (anything else is skipped as "not in the confirmed summary"); with no saved summary it exits with 2. Holds the workspace lock. Re-reads the thread before every write; stops at the first API error; records each write in `state.json` and then in the round file right after it lands, so a second run resumes without posting twice. | yes |
+| `publish <round-file>` | Dry run: the plan (every reply in full with its exact text, every reaction), what is skipped and why, and the confirmation code. Refuses, with exit 1, a reply that holds a tag character, bidirectional control, LRM, RLM, ALM, zero-width space, word joiner or byte-order mark, naming the block and the code point. Saves the planned writes to `.plans/<code>.json`, and deletes earlier summaries made for the same file bytes. The round file must be in `.figma-comments/<file_key>/` of the current folder. | no |
+| `publish <round-file> --confirm <code>` | Posts the plan if the file is byte-for-byte the one the code was computed from and the saved summary is unchanged (the code covers both), and only the writes the saved summary listed (anything else is skipped as "not in the confirmed summary"); with no saved summary it exits with 2. Holds the workspace lock. Re-reads the thread before every write; stops at the first API error; records each write in `state.json` and then in the round file right after it lands, so a second run resumes without posting twice. | yes |
 | `retract <ref> <comment_id>` | Shows one of your own replies and a code; deletes nothing. Refuses root comments and other people's comments. | no |
 | `retract <ref> <comment_id> --confirm <code>` | Deletes that reply. The code is bound to the comment id and its current text. Holds the workspace lock. The round file's marker stays; the corrected reply goes out next round through `collect`. | yes |
 | `token set [--expires YYYY-MM-DD] [--allow-file]` | Reads the token with hidden input and stores it. `--allow-file` allows a mode-600 file where no credential store exists (not on Windows). Needs a terminal; refuses a piped input and an echoing fallback; Ctrl-C ends with "cancelled; nothing was stored". | no |
@@ -210,11 +193,11 @@ Every command that reads the token prints a warning on stderr when it expires in
 |---|---|
 | `FIGMA_TOKEN` | The token. When set, it wins over the stored token. Useful for CI or a headless machine. |
 | `FIGMA_TOKEN_EXPIRES` | Expiry date of `FIGMA_TOKEN` as `YYYY-MM-DD`, so the 14-day warning works. A malformed value is an error. |
-| `FIGMA_COMMENTS_REPLAY` | **Test hook.** A directory of recorded JSON responses. When set, the CLI does not call Figma and looks up no token; it reads the fixtures, records write attempts in `writes.jsonl` there, and prints a warning on stderr. Never set it in real use. |
+| `FIGMA_COMMENTS_REPLAY` | **Test hook.** A directory of recorded JSON responses. When set, the CLI does not call Figma and looks up no token; it reads the fixtures, records write attempts in `writes.jsonl` there, and prints a warning on stderr and as the first line of stdout of every command. Never set it in real use. |
 | `FIGMA_COMMENTS_REPLAY_FAIL` | **Test hook** for replay mode only: `<n>:<status>` makes the n-th write attempt fail with that HTTP status; `<n>:lost` applies the n-th write but answers 504, like a request whose response was lost. |
 | `FIGMA_COMMENTS_DEBUG` | `1` shows the Python traceback of an unexpected failure instead of a one-line error. |
 
-Where the token is looked up, in order: `FIGMA_TOKEN`; the OS credential store (service `figma-comments`); on macOS also an older Keychain item with service `figma-pat`; the opt-in file `~/.config/figma-comments/token.json`.
+Where the token is looked up, in order: `FIGMA_TOKEN`; the OS credential store (service `figma-comments`); on macOS also an older Keychain item with service `figma-pat`; the opt-in file `~/.config/figma-comments/token.json`. The file is used only if it is a regular file owned by you, not a symbolic link, with no group or other permission bits; otherwise the command says to run `chmod 600` on it.
 
 ## Data on disk
 
@@ -223,15 +206,16 @@ Everything lives in the designer's project, under `.figma-comments/<file_key>/`:
 | File | Contents |
 |---|---|
 | `.gitignore` | `*`, written on first use, never overwritten |
-| `round-NN.md` | one file per round: the client's comment text, drafts, publication markers |
-| `state.json` | collection times, per-thread kind, action, draft and the ids of published replies |
+| `round-NN.md` | one file per round: the client's comment text, drafts, publication markers (if you edit the file while `publish --confirm` runs, the marker is written into your edited file when it still parses, and the run stops) |
+| `state.json` | collection times, the message ids seen in each thread per round, per-thread kind, action, draft and the ids of published replies |
 | `participants.json` | Figma user ids, display names, client or team, role |
 | `.plans/<code>.json` | the saved summary of a dry run: thread ids, kind of write, a hash of each reply text; deleted after a completed publish and cleaned after 7 days |
 | `.publish.lock` | exists only while `publish --confirm`, `retract --confirm` or `collect` runs; a leftover one means a killed run and is deleted by the designer |
+| `*.tmp`, `.publish.lock.*.new` | short-lived temp files next to the file they replace, removed straight after |
 
 These files contain client names and the text of client comments. The `.gitignore` keeps them out of git; do not commit them by other means, do not paste them into issues, and do not share the folder.
 
-The token is never written into this folder.
+Every file the tool writes is inside this folder, except the opt-in token file (`~/.config/figma-comments/token.json`) and, when the `curl` fallback is used, two temp files in the system temp folder (the response headers and the request body, deleted after each request). The folder must be a real folder inside the project: a symbolic link at `.figma-comments` or `.figma-comments/<file_key>`, or a path that resolves outside the project, is refused by `collect`, `status`, `participants`, `publish` and `retract`. The token is never written into this folder.
 
 ## Link sharing warning
 
@@ -244,13 +228,14 @@ Each limit says how it was established. "Measured" means a throwaway script call
 - **Comments cannot be resolved through the API.** `PUT`, `PATCH` and `POST` on a comment and `POST …/resolve` all returned 404 (measured 13 October 2026). The skill lists the threads ready to close; a person closes them in Figma.
 - **A posted reply cannot be edited.** The same `PUT` and `PATCH` attempts returned 404. A wrong reply can only be deleted with `retract`; the corrected one goes out in the next round.
 - **Markdown is not rendered in comments posted through the API.** `**bold**` showed with its asterisks in the Figma interface (checked twice, 13 October 2026). The CLI strips paired markers before posting.
-- **A long rate-limit wait stops the command.** On HTTP 429 the CLI waits for `Retry-After` and retries up to 5 times; if Figma asks for more than 300 seconds it stops with "try again later" instead of blocking the agent's shell. This is a design choice; no 429 has been observed in testing.
+- **A long rate-limit wait stops the command.** On HTTP 429 the CLI waits for `Retry-After` and retries up to 5 times; if Figma asks for more than 300 seconds at once, or the waits of one run add up to more than 600 seconds, it stops with "try again later" instead of blocking the agent's shell. This is a design choice; no 429 has been observed in testing.
 - **No real end-to-end run with a second Figma account yet.** All client-thread behaviour (groups, preflight, recovery) is tested on fabricated fixtures in the exact shape of real responses. The API measurements were made with one account, so every live comment came from the token owner.
-- **Windows Credential Manager and Linux Secret Service are untested on real machines.** The Windows path has a test that runs only on Windows; the Linux path is tested with a mocked `secret-tool`. Both will be exercised only by the CI matrix.
+- **Windows Credential Manager and Linux Secret Service have not been run on a real machine.** The Windows path has a test that runs only on Windows; the Linux path is tested with a mocked `secret-tool`. Until someone runs them for real, they are covered only by those tests (and the CI matrix, once CI has run).
+- **Keychain storage protects about as much as a mode-600 file against code running as you.** An audit finding, not verified here: an item created through `/usr/bin/security` may be readable by other processes of the same user without a prompt.
 - **Tested only in Claude Code.** Codex CLI, Gemini CLI, Cursor and Antigravity have not been tried.
 - **FigJam is untested.** Only Figma Design files were used.
 - **Link-sharing detection knows one value for sure.** Only `linkAccess: "view"` was observed (13 October 2026); the other values `doctor` handles are assumptions, and an unknown value is reported as unknown.
-- **The collection time comes from your computer's clock.** "Written after the round was collected" compares that time with Figma's timestamps, so a clock that is minutes off shifts the comparison.
+- **A clock that is off can still shift one check.** "Written after the round was collected" is decided by message id, not by clocks. Reactions carry no id, so recognising our own ✅ after a lost answer still compares Figma's time with the collection time from your computer's clock, and a state file from before ids were recorded falls back to timestamps.
 - **A killed run can leave the lock behind.** SIGTERM releases the lock on macOS and Linux; SIGKILL, a power cut or a closed laptop do not, and Windows has no SIGTERM handler. The next run refuses until the designer deletes `.publish.lock`. The tool never deletes it, because it may belong to a run that is still posting.
 - **The code proves what is published, not that a person agreed.** An agent that runs `publish` and `publish --confirm` itself passes every check. That a person approved rests on the rule in `SKILL.md` and on the agent's permission prompt (see [SECURITY.md](SECURITY.md)).
 - **Not supported:** real @-mentions, new root comments, webhooks or background watching, task trackers.
@@ -259,7 +244,7 @@ Each limit says how it was established. "Measured" means a throwaway script call
 
 0.1.0, unreleased, pre-1.0. What that means concretely, as of 14 October 2026:
 
-- 468 unit tests pass on macOS with Python 3.9 and 3.13 (`python3 -m unittest discover -s tests`; 2 skipped: the Windows-only test and an opt-in live Keychain test). The tests use no network. ruff, mypy, bandit and the documentation checks in `tools/` pass locally.
+- The unit suite (`python3 -m unittest discover -s tests`) passes on macOS with Python 3.9 and 3.13; the Windows-only test and an opt-in live Keychain test are skipped there. The tests use no network. ruff, mypy, bandit and the documentation checks in `tools/` pass locally.
 - The CI workflows (the tests on macOS, Windows and Linux × Python 3.9 and 3.13; ruff, mypy and bandit; the documentation and skill checks; CodeQL; gitleaks) are written but have not run on GitHub yet, so the badges above show a result only after the first run; until then Windows and Linux are untested by us.
 - The Figma API behaviour the code relies on was measured on 13 October 2026; the CLI itself has not yet done a live round against Figma.
 - One person, the author, uses it. Nobody else has installed it.

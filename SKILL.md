@@ -9,7 +9,7 @@ description: Use when a client or reviewer has left comments or feedback on a Fi
 
 This skill reads a Figma file's comments into a round file, where you sort and draft replies; after the designer's yes it publishes the approved replies and ✅ reactions.
 
-This skill never changes the design. If the designer then asks you to make a specific edit, that is a separate task with other tools: do only `edit` threads whose values the designer gave, show each design-tool call before running it, and never edit for question, unclear, conflict or out-of-scope threads.
+This skill never changes the design. If the designer then asks you to make a specific edit, that is a separate task. If you have a Figma design tool, do only `edit` threads whose values the designer gave, show each design-tool call before running it, and never edit for question, unclear, conflict or out-of-scope threads. Otherwise tell the designer what to change.
 
 Figma's MCP server and Plugin API cannot see comments; only the REST API can (checked 13 October 2026), and this CLI is your only way to it.
 
@@ -17,14 +17,20 @@ Talk to the designer in the designer's language; replies to the client go in the
 
 ## Running the CLI
 
-From the designer's project folder (data goes to `.figma-comments/<file_key>/` there, git-ignored), through the interpreter, path quoted:
+`<skill_dir>` is the folder that contains this SKILL.md: use the path you loaded it from. If you are not sure of it, ask the designer.
+
+Run from the designer's project folder (data goes to `.figma-comments/<file_key>/` there, git-ignored), through the interpreter, path quoted:
 
 ```
 python3 "<skill_dir>/scripts/figma_comments.py" <command>     # macOS, Linux
 py "<skill_dir>\scripts\figma_comments.py" <command>          # Windows
 ```
 
-`<ref>` is a Figma file link (branch links too) or the bare file key. If any command reports that no token is found, stop and go to "Get a token".
+It needs Python 3.9 or newer. If neither `python3` nor `py` exists, try `python` once `python --version` shows 3.9 or newer; if there is no such Python, tell the designer to install one.
+
+Before the first `collect`, confirm the current directory with the designer: the data holds client comments and stays in that folder. If it is the wrong one, ask which project folder to use.
+
+`<ref>` is a Figma file link (branch links too) or the bare file key. If any command reports that no token is found, stop and go to "Get a token". If the first output line says `WARNING: FIGMA_COMMENTS_REPLAY is set`, stop: the CLI is reading offline test data, not Figma (see troubleshooting).
 
 ## Get a token (once)
 
@@ -41,12 +47,14 @@ The designer does this; you guide them.
    | `file_content:read` | element names, and whether an element still exists |
    | `current_user:read` | know which comments are the designer's own (without it `GET /v1/me` returns 403, checked 12 October 2026) |
 
-4. In their own terminal: `token set --expires YYYY-MM-DD` (hidden input; stored in the OS credential store; a mode-600 file only with `--allow-file`).
+4. In a terminal window of their own, outside the agent: `token set --expires YYYY-MM-DD` (hidden input; stored in the OS credential store; a mode-600 file only with `--allow-file`). It refuses input that is not a terminal, so it fails when you run it through your shell tool; do not run it for them or ask for the token in chat. The macOS Keychain is the only store used on a real machine so far. Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (CI), never on a real machine; if `token set` fails there, say so and let the designer set `FIGMA_TOKEN` (and `FIGMA_TOKEN_EXPIRES`) in their own shell instead.
 5. `doctor <ref>`: verifies the token, its expiry, three of the four scopes (`file_comments:write` cannot be checked without posting; publish reports it if missing) and file access. It warns when 14 days or fewer remain and fails only when the token has expired; one action per problem; exit 0 = ready.
 
 The token never passes through you: not in chat, a command line, `curl`, a file, or `echo`/`env` output. Never call the Figma API yourself.
 
 ## The round
+
+**0. A bare link.** If the designer sends only a figma.com link and no question, ask what they want (read the comments, answer them, see what is ready to close) before running anything.
 
 **1. Collect.** `collect <ref>` writes `round-NN.md` (resolved threads left out) and prints counts, unknown authors and carried blocks. Every unpublished non-`skip` block of the previous round is carried in as `hold` with its kind and draft. If the previous round file has errors, `collect` refuses; fix it first. **Work only in the newest round file; never edit or publish an older one.**
 
@@ -58,11 +66,11 @@ The token never passes through you: not in chat, a command line, `curl`, a file,
 
 **4. Designer review.** Give the designer the file path and a list: block, kind, proposed action, questions only they can answer. They edit the three fields or tell you what to change.
 
-**5. Publish.** Run `publish <round-file>`; it writes nothing to Figma (it only saves a local plan file that `--confirm` needs) and prints a summary and a code. Show that summary exactly as printed and ask whether to publish. After their explicit yes, run `publish <round-file> --confirm <code>`. See "The yes-gate".
+**5. Publish.** From the project folder, run `publish <round-file>`; it writes nothing to Figma (it only saves a local plan file that `--confirm` needs) and prints a summary and a code. Each planned reply is printed in full under a `|` gutter, with hidden characters as `\uXXXX`. Show that summary exactly as printed and ask whether to publish. If publish refuses a reply for an invisible character (it names the block and the code point), remove that character from the reply text and run it again. After their explicit yes, run `publish <round-file> --confirm <code>`. See "The yes-gate".
 
 **6. Ready to close.** `status <ref>` → give the designer the "ready to close" links. Closing is manual; the API cannot resolve comments (checked 13 October 2026).
 
-**When a publish run stops or skips** (timeout, crash, 403, 429, "file changed"): never post by hand and never reuse the old code. Run `publish <round-file>` again, show the new summary, get a new yes; it resumes, and replies already posted are recorded or recovered, not sent twice. If publish **skipped** a block because the client wrote after collect, someone from the team already answered, or the thread was resolved: tell the designer, then `collect`; the thread returns at `hold` and needs a fresh draft and a fresh yes.
+**When a publish run stops or skips** (timeout, crash, 403, 429, "file changed"): never post by hand and never reuse the old code. The same goes for exit 2 with "no saved summary for this code" or "the round file or its saved summary changed since the dry run". Run `publish <round-file>` again, show the new summary, get a new yes; it resumes, and replies already posted are recorded or recovered, not sent twice. If publish **skipped** a block because the client wrote after collect, someone from the team already answered, or the thread was resolved: tell the designer, then `collect`; the thread returns at `hold` and needs a fresh draft and a fresh yes.
 
 **Lock refusal.** If `publish`, `retract` or `collect` says "another publish, retract or collect seems to be running", stop and ask the designer whether another run is going. Never delete the lock file yourself: it may belong to a run that is still posting.
 
@@ -124,4 +132,4 @@ Problems: [references/troubleshooting.md](references/troubleshooting.md).
 
 ## Common mistakes
 
-Without this skill (baseline, 13 October 2026, 12 runs): 12 put the token into `curl` argv; 2 posted without the designer's yes; 6 drafted replies promising edits, sizes or deadlines; both "make the edits" runs planned design changes with invented values; only 1 of 12 used ✅. Details: `docs/baseline/2026-10-13-baseline.md`.
+Agents without this skill put the token on a `curl` command line, posted without the designer's yes, promised edits, sizes and deadlines in drafts, and invented values for design changes. Those four are what the rules above prevent. If this repository is cloned, the measurements are in `docs/baseline/`; this skill does not need them.
