@@ -25,15 +25,18 @@ A posted reply cannot be edited, so everything here refuses by default (spec 4.2
   the designer edited the file during the run, the marker goes into the edited text when it
   still parses, and the run stops. A write whose answer was lost (it went through, the
   response did not arrive) is found on the next run and recorded instead of being posted
-  twice: exactly one reply by the token owner created after the round's collection time is
-  taken as ours; our own check mark created after it counts as our reaction;
+  twice: exactly one reply by the token owner written after the round was collected is
+  taken as ours; our own check mark created after the collection time counts as our reaction;
 * the first API error stops the run; a write is never retried here (the HTTP client
   only waits out a 429 with ``Retry-After``, which means the request was not applied).
 
-"After collected_at" means ``created_at >= collected_at``: collect stamps the time before
-it reads, so a message in that same second may or may not have been seen; counting it as
-newer errs toward skipping. A message from anyone outside the team (client or an author
-not in participants.json) counts as "the client wrote".
+"Written after the round was collected" means: its id is not among the ids collect saw in
+that thread (``state.rounds[i]["seen"]``), so Figma's clock is never compared with ours. A
+state.json from before that record existed falls back to ``created_at >= collected_at``
+(collect stamps the time before it reads; counting the same second as newer errs toward
+skipping). Reactions carry no id, so "our check mark" still uses the timestamp rule. A
+message from anyone outside the team (client or an author not in participants.json)
+counts as "the client wrote".
 
 Per round, state.json also keeps ``rounds[i]["published"] = {root: {"reply", "reacted"}}``
 (read with ``state.round_published``): ``threads[root]`` alone cannot tell which round its
@@ -61,7 +64,16 @@ from .lock import LOCK_NAME, LockBusy, workspace_lock  # noqa: F401  (LOCK_NAME,
 from .model import Participant, Thread, build_threads, parse_ts
 from .participants import load_participants
 from .roundfile import Block, RoundMeta, mark_published, parse_round
-from .state import State, ThreadState, check_workspace, find_round, load_state, round_published, save_state
+from .state import (
+    State,
+    ThreadState,
+    check_workspace,
+    find_round,
+    load_state,
+    round_published,
+    round_seen,
+    save_state,
+)
 from .text import ForbiddenCharacter, normalize_outgoing
 from .urls import comment_link
 
@@ -300,17 +312,30 @@ def _at_or_after(value: Any, moment: datetime) -> bool:
         return True  # an unreadable time must not hide a newer message
 
 
+def _newer(message: Dict[str, Any], seen: Optional[Set[str]], collected_at: datetime) -> bool:
+    """Written after the round was collected: its id is not among the ids collect saw.
+
+    Without a record (`seen` None: a state.json from before it existed) the timestamp rule
+    applies instead: ``created_at >= collected_at``.
+    """
+    if seen is not None:
+        return str(message.get("id")) not in seen
+    return _at_or_after(message.get("created_at"), collected_at)
+
+
 def preflight(
     item: PlanItem,
     thread: Optional[Thread],
     collected_at: datetime,
     people: Dict[str, Participant],
     owner_id: str,
+    seen: Optional[Set[str]] = None,
 ) -> Optional[SkipReason]:
     """Why `item` must not be written now, or None. Reads only; spec 6.1, 6.2, 6.4.
 
     A reaction may go on a resolved thread (it does not reopen it). Our own reply of the
-    same block (`item.own_reply_id`) does not count as "the team answered".
+    same block (`item.own_reply_id`) does not count as "the team answered". `seen`: the
+    message ids collect saw in this thread (see `_newer`).
     """
     if thread is None:
         return SkipReason.THREAD_GONE
@@ -320,7 +345,7 @@ def preflight(
     for message in thread.messages:
         if item.own_reply_id and str(message.get("id")) == item.own_reply_id:
             continue
-        if not _at_or_after(message.get("created_at"), collected_at):
+        if not _newer(message, seen, collected_at):
             continue
         if _is_team(_uid(message), people, owner_id):
             team = True
@@ -333,8 +358,11 @@ def preflight(
     return None
 
 
-def find_lost_reply(thread: Optional[Thread], collected_at: datetime, owner_id: str) -> Optional[str]:
-    """The id of THE reply by the token owner created after collection, if there is exactly one.
+def find_lost_reply(thread: Optional[Thread], collected_at: datetime, owner_id: str,
+                    seen: Optional[Set[str]] = None) -> Optional[str]:
+    """The id of THE reply by the token owner written after collection, if there is exactly one.
+
+    "After collection" = not among the ids collect saw (`seen`), or by timestamp without them.
 
     That is a write whose response got lost (or the owner answered by hand): either way it
     is recorded as the block's reply and nothing is posted again.
@@ -344,7 +372,7 @@ def find_lost_reply(thread: Optional[Thread], collected_at: datetime, owner_id: 
     mine = [
         str(m.get("id"))
         for m in thread.replies
-        if _uid(m) == owner_id and _at_or_after(m.get("created_at"), collected_at)
+        if _uid(m) == owner_id and _newer(m, seen, collected_at)
     ]
     return mine[0] if len(mine) == 1 and _is_id(mine[0]) else None
 
@@ -580,10 +608,11 @@ def _publish(api: FigmaAPI, round_path: Path, ws: Path, raw: bytes, text: str, m
         return report
 
     run = _Run(api, round_path, ws, raw, text, meta, {b.root_id: b for b in blocks}, record)
+    seen = round_seen(find_round(state, meta.n, meta.collected_at))
     try:
         people = load_participants(str(ws / PARTICIPANTS_FILE))
         owner_id = _owner(api)
-        _walk(run, items, report, collected_at, people, owner_id, allowed)
+        _walk(run, items, report, collected_at, people, owner_id, allowed, seen)
     except (FigmaHTTPError, TransportError) as exc:
         report.error = stop_message(exc, "publish")
     except (_Stop, ValueError, OSError) as exc:
@@ -593,8 +622,14 @@ def _publish(api: FigmaAPI, round_path: Path, ws: Path, raw: bytes, text: str, m
 
 def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at: datetime,
           people: Dict[str, Participant], owner_id: str,
-          allowed: Optional[Set[Tuple[str, str, str]]]) -> None:
-    """Dry run when `allowed` is None; otherwise write, but only what the summary listed."""
+          allowed: Optional[Set[Tuple[str, str, str]]],
+          seen_map: Optional[Dict[str, Set[str]]] = None) -> None:
+    """Dry run when `allowed` is None; otherwise write, but only what the summary listed.
+
+    `seen_map`: the ids collect saw per thread (None for a state.json without the record).
+    A block missing from a record that exists counts as having seen nothing: every message
+    in it is newer, so it is skipped rather than trusted.
+    """
     write = allowed is not None
     key = run.meta.file_key
     skipped_blocks: Dict[str, Entry] = {}  # root -> the skipped reply of a reply+react block
@@ -621,9 +656,10 @@ def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at:
             cached = _threads(run.api, key)  # fresh before EVERY write
         thread = cached.get(root)
         author = _author(thread, people, owner_id)
+        seen = None if seen_map is None else seen_map.get(root, set())
 
         if item.action == "reply":
-            lost = find_lost_reply(thread, collected_at, owner_id)
+            lost = find_lost_reply(thread, collected_at, owner_id, seen)
             if lost:  # a fact, not a write: recorded whatever the summary said
                 if write:
                     run.record(root, reply_id=lost)
@@ -632,7 +668,7 @@ def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at:
                 report.recovered.append(Entry(root, author, "reply", comment_id=lost))
                 continue
             # the live reason first (more useful to show); either way nothing is posted
-            reason = preflight(item, thread, collected_at, people, owner_id) or \
+            reason = preflight(item, thread, collected_at, people, owner_id, seen) or \
                 (None if listed(item) else SkipReason.NOT_IN_SUMMARY)
             if reason:
                 entry = Entry(root, author, "reply", text=item.text, reason=reason)
@@ -662,7 +698,7 @@ def _walk(run: _Run, items: List[PlanItem], report: PublishReport, collected_at:
                 ready(root, thread)
             report.recovered.append(Entry(root, author, "react"))
             continue
-        reason = preflight(check_item, thread, collected_at, people, owner_id) or \
+        reason = preflight(check_item, thread, collected_at, people, owner_id, seen) or \
             (None if listed(item) else SkipReason.NOT_IN_SUMMARY)
         if reason:
             report.skipped.append(Entry(root, author, "react", reason=reason))

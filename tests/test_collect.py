@@ -73,7 +73,9 @@ class CollectTests(CollectBase):
         for b in blocks:
             self.assertEqual((b.kind, b.action, b.reply), ("", "hold", ""))
         state = load_state(self.ws)
-        self.assertEqual(state.rounds, [{"n": 1, "collected_at": "2026-10-13T10:00:00Z"}])
+        self.assertEqual([{k: r[k] for k in ("n", "collected_at")} for r in state.rounds],
+                         [{"n": 1, "collected_at": "2026-10-13T10:00:00Z"}])
+        self.assertEqual(sorted(state.rounds[0]["seen"]), sorted(b.root_id for b in blocks))
         self.assertEqual((self.ws / ".gitignore").read_text(encoding="utf-8"), "*\n")
 
     def test_block_contents(self):

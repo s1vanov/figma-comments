@@ -35,6 +35,7 @@ from fclib.publish import (
     SkipReason,
     build_plan,
     confirm_code,
+    find_lost_reply,
     preflight,
     publish,
     retract,
@@ -422,6 +423,35 @@ class WriteTests(PublishBase):
                          [("4200109", SkipReason.CLIENT_WROTE_AFTER_COLLECT)])
         self.assertEqual([w["body"]["comment_id"] for w in self.writes()], ["4200115"])
 
+    def test_collect_records_the_message_ids_of_every_thread_in_the_round(self):
+        entry = load_state(self.ws).rounds[0]
+        roots = set(self.blocks())
+        self.assertEqual(set(entry["seen"]), roots)
+        live = self.live()["comments"]
+        for root in roots:
+            expected = {c["id"] for c in live if c["id"] == root or c.get("parent_id") == root}
+            self.assertEqual(set(entry["seen"][root]), expected)
+
+    def test_unseen_client_reply_timestamped_before_collection_is_skipped(self):
+        # the local clock ran ahead of Figma's: the client's new message carries a time before collected_at
+        self.edit(("4200109", "edit", "reply", "Скоротили."), ("4200115", "question", "reply", "Так."))
+        report = self.publish_now(between=lambda: self.add_reply(
+            "4200109", "client-1", created="2026-10-13T09:58:30.000Z", text="Ні, залиште як було"))
+        self.assertEqual([(e.root_id, e.reason) for e in report.skipped],
+                         [("4200109", SkipReason.CLIENT_WROTE_AFTER_COLLECT)])
+        self.assertEqual([w["body"]["comment_id"] for w in self.writes()], ["4200115"])
+
+    def test_state_without_a_seen_record_falls_back_to_timestamps(self):
+        path = self.ws / "state.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        del data["rounds"][0]["seen"]  # a state.json written before the record existed
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.edit(("4200109", "edit", "reply", "Скоротили."), ("4200115", "question", "reply", "Так."))
+        report = self.publish_now(between=lambda: self.add_reply("4200109", "client-1", text="Ще одне"))
+        self.assertEqual([(e.root_id, e.reason) for e in report.skipped],
+                         [("4200109", SkipReason.CLIENT_WROTE_AFTER_COLLECT)])
+        self.assertEqual([w["body"]["comment_id"] for w in self.writes()], ["4200115"])
+
     def test_team_answered_after_collect_skipped(self):
         self.edit(("4200109", "edit", "reply", "Скоротили."), ("4200116", "unclear", "reply", "Що саме?"))
         def answer():
@@ -508,6 +538,33 @@ class PreflightTests(unittest.TestCase):
         self.assertIs(preflight(reply, self.thread(extra=[same_second]), self.at, self.people, OWNER),
                       SkipReason.CLIENT_WROTE_AFTER_COLLECT)
 
+    def test_seen_ids_decide_not_the_clock(self):
+        reply = PlanItem("1", "reply", "t", "reply")
+        early = {"id": "5", "parent_id": "1", "user": {"id": "client-2"},
+                 "created_at": "2026-10-13T09:30:00Z", "message": "m"}  # before collection by the clock
+        late = {"id": "6", "parent_id": "1", "user": {"id": "client-2"}, "created_at": AFTER, "message": "m"}
+        # unseen at collect: the client wrote after it, whatever the timestamps say
+        self.assertIs(preflight(reply, self.thread(extra=[early]), self.at, self.people, OWNER, seen={"1"}),
+                      SkipReason.CLIENT_WROTE_AFTER_COLLECT)
+        # seen at collect: not newer, even with a timestamp after collected_at (a clock behind)
+        self.assertIsNone(preflight(reply, self.thread(extra=[late]), self.at, self.people, OWNER, seen={"1", "6"}))
+        team = {"id": "7", "parent_id": "1", "user": {"id": "team-2"}, "created_at": "2026-10-13T09:40:00Z",
+                "message": "m"}
+        self.assertIs(preflight(reply, self.thread(extra=[team]), self.at, self.people, OWNER, seen={"1"}),
+                      SkipReason.TEAM_ANSWERED_AFTER_COLLECT)
+        # a block missing from the record (added by hand): every message counts as unseen
+        self.assertIs(preflight(reply, self.thread(), self.at, self.people, OWNER, seen=set()),
+                      SkipReason.CLIENT_WROTE_AFTER_COLLECT)
+
+    def test_lost_reply_is_the_one_unseen_owner_reply(self):
+        mine = {"id": "9", "parent_id": "1", "user": {"id": OWNER}, "created_at": "2026-10-13T09:50:00Z",
+                "message": "m"}
+        old = {"id": "4", "parent_id": "1", "user": {"id": OWNER}, "created_at": AFTER, "message": "m"}
+        thread = self.thread(extra=[mine, old])
+        self.assertEqual(find_lost_reply(thread, self.at, OWNER, seen={"1", "4"}), "9")
+        self.assertIsNone(find_lost_reply(thread, self.at, OWNER, seen={"1"}))  # two unseen: not adopted
+        self.assertEqual(find_lost_reply(thread, self.at, OWNER), "4")  # no record: the clock rule
+
 
 # ---------------------------------------------------------------------------
 # crashes, lost responses, resume
@@ -578,6 +635,21 @@ class ResumeTests(PublishBase):
         self.assertEqual(self.posts(), [(COMMENTS_PATH, "4200109"), (COMMENTS_PATH, "4200115")])
         self.assertEqual(self.blocks()["4200109"].published_reply, lost_id)
         self.assertEqual(load_state(self.ws).threads["4200109"].published_reply, lost_id)
+
+    def test_lost_reply_is_recovered_when_collected_at_is_ahead_of_figma(self):
+        # the local clock ran 10 minutes ahead at collect: Figma stamps the lost reply "before" collection
+        self._tick = itertools.count(1)
+        self.clock = lambda: NOW - timedelta(minutes=10) + timedelta(seconds=next(self._tick))
+        self.edit(("4200109", "edit", "reply", "Скоротили."))
+        report = self.publish_now(fail="1:lost")
+        self.assertIn("HTTP 504", report.error)
+        lost_id = next(c["id"] for c in self.live()["comments"] if c.get("parent_id") == "4200109"
+                       and c["user"]["id"] == OWNER)
+        report = self.publish_now()
+        self.assertIsNone(report.error)
+        self.assertEqual([(e.root_id, e.comment_id) for e in report.recovered], [("4200109", lost_id)])
+        self.assertEqual(len(self.writes()), 1)  # no duplicate
+        self.assertEqual(self.blocks()["4200109"].published_reply, lost_id)
 
     def test_lost_reaction_is_recovered(self):
         self.edit(("4200116", "confirmation", "react"))

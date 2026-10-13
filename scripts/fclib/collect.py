@@ -457,7 +457,10 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
     ws = ensure_workspace(root, key)
     round_path = ws / ("round-%02d.md" % n)
     _write_new_file(round_path, text)
-    state.rounds.append({"n": n, "collected_at": collected_at})
+    # Which messages this round was built from: publish decides "written after collect" by
+    # these ids, not by comparing Figma's clock with ours.
+    seen = {thread.root_id: [str(m.get("id")) for m in thread.messages] for thread, _, _, _ in included}
+    state.rounds.append({"n": n, "collected_at": collected_at, "seen": seen})
     save_state(ws, state)
 
     return CollectResult(

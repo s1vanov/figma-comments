@@ -12,7 +12,7 @@ import re
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 KINDS = ("edit", "question", "unclear", "conflict", "out-of-scope", "confirmation", "duplicate")
 ACTIONS = ("reply", "react", "reply+react", "hold", "skip")
@@ -41,7 +41,8 @@ class ThreadState:
 
 @dataclass
 class State:
-    rounds: List[Dict[str, Any]] = field(default_factory=list)  # [{"n": int, "collected_at": str}]
+    # [{"n": int, "collected_at": str, "seen": {root: [ids]}, "published": {...}}]
+    rounds: List[Dict[str, Any]] = field(default_factory=list)
     threads: Dict[str, ThreadState] = field(default_factory=dict)  # keyed by root comment id
 
 
@@ -63,6 +64,24 @@ def round_published(entry: Optional[Dict[str, Any]]) -> Dict[str, Tuple[Optional
         reply = rec.get("reply")
         ok = isinstance(reply, str) and reply.isascii() and reply.isdigit()
         out[str(root)] = (reply if ok else None, rec.get("reacted") is True)
+    return out
+
+
+def round_seen(entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Set[str]]]:
+    """The message ids collect saw in each thread of one round: root id -> {comment ids}.
+
+    collect keeps them in that round's entry as ``"seen": {root: [ids]}`` (optional; state
+    files written before it existed have none). None when the entry has no usable record:
+    callers then fall back to comparing timestamps with ``collected_at``.
+    """
+    seen = entry.get("seen") if isinstance(entry, dict) else None
+    if not isinstance(seen, dict):
+        return None
+    out: Dict[str, Set[str]] = {}
+    for root, ids in seen.items():
+        if not isinstance(ids, list):
+            return None
+        out[str(root)] = {str(i) for i in ids}
     return out
 
 
