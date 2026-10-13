@@ -195,9 +195,10 @@ Every command that reads the token prints a warning on stderr when it expires in
 | `FIGMA_TOKEN_EXPIRES` | Expiry date of `FIGMA_TOKEN` as `YYYY-MM-DD`, so the 14-day warning works. A malformed value is an error. |
 | `FIGMA_COMMENTS_REPLAY` | **Test hook.** A directory of recorded JSON responses. When set, the CLI does not call Figma and looks up no token; it reads the fixtures, records write attempts in `writes.jsonl` there, and prints a warning on stderr and as the first line of stdout of every command. Never set it in real use. |
 | `FIGMA_COMMENTS_REPLAY_FAIL` | **Test hook** for replay mode only: `<n>:<status>` makes the n-th write attempt fail with that HTTP status; `<n>:lost` applies the n-th write but answers 504, like a request whose response was lost. |
+| `FIGMA_TOKEN_KEYCHAIN_SERVICE` | macOS only, opt-in: the service name of a Keychain item (generic password) where you already keep a raw token, for example `figma-pat`. Read only when this tool's own Keychain item is absent; `token status` then shows source `keychain:<service>`. Without this variable no other Keychain item is ever read. |
 | `FIGMA_COMMENTS_DEBUG` | `1` shows the Python traceback of an unexpected failure instead of a one-line error. |
 
-Where the token is looked up, in order: `FIGMA_TOKEN`; the OS credential store (service `figma-comments`); on macOS also an older Keychain item with service `figma-pat`; the opt-in file `~/.config/figma-comments/token.json`. The file is used only if it is a regular file owned by you, not a symbolic link, with no group or other permission bits; otherwise the command says to run `chmod 600` on it.
+Where the token is looked up, in order: `FIGMA_TOKEN`; the OS credential store (service `figma-comments`); on macOS, the Keychain item named by `FIGMA_TOKEN_KEYCHAIN_SERVICE` if you set it; the opt-in file `~/.config/figma-comments/token.json`. The file is used only if it is a regular file owned by you, not a symbolic link, with no group or other permission bits; otherwise the command says to run `chmod 600` on it.
 
 ## Data on disk
 

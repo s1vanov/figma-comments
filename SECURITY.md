@@ -117,7 +117,7 @@ If the lock exists, the command refuses with exit 1 and writes nothing. **The lo
 
 ## Token handling
 
-- Lookup order: `FIGMA_TOKEN`, the OS credential store, on macOS an older Keychain item `figma-pat`, then the opt-in file.
+- Lookup order: `FIGMA_TOKEN`, the OS credential store, on macOS the Keychain item named by `FIGMA_TOKEN_KEYCHAIN_SERVICE` (opt-in, read only when this tool's own item is absent), then the opt-in file. No other Keychain item is read: a token the designer keeps elsewhere is used only when they name its service in that variable.
 - `token set` reads the token with `getpass` (no echo) and refuses to run when stdin is not a terminal, so an agent cannot pipe a token into it. It also refuses the fallback in which `getpass` would echo the input ("cannot read the token without echo"). Ctrl-C or end of input at a prompt ends with "cancelled; nothing was stored". It stores `{"token", "expires"}` as JSON in the credential store.
 - The opt-in token file is read only if it passes `lstat` checks: not a symbolic link (the config directory included), a regular file, owned by the current user, and without any group or other permission bit. Otherwise the token is not used and the message says what to do (for example `chmod 600 <file>`). The file is written with `O_NOFOLLOW` and, from a temp file, renamed into place with mode 600. Windows has no file fallback.
 - The token is never printed: `token status` and `doctor` show only its source and days left. `TokenInfo` hides the value in its `repr`. HTTP error messages are cut to 200 characters with the token replaced by `***`; a transport error that contains the token is raised again without the original exception attached.
@@ -125,7 +125,7 @@ If the lock exists, the command refuses with exit 1 and writes nothing. **The lo
 - A token containing control characters is rejected before any request, so it cannot inject a header.
 - Every command that reads the token warns on stderr (`warning: ...`) when it expires within 14 days, and again once it has expired; an expired token does not stop the command, Figma's 403 does. `doctor` verifies the token and its expiry and fails the expiry check only when the token has expired; 14 days or fewer is a warning. It also exercises three of the four scopes: `current_user:read` (`GET /v1/me`), `file_comments:read` (reading the comments) and `file_content:read` (the nodes call). `file_comments:write` cannot be checked without posting a comment, so a missing write scope shows up when `publish` is refused.
 - **Credential-store caveat (an audit finding, not verified here).** On macOS the token is written with `/usr/bin/security`. An item created that way may be readable by other processes of the same user without a prompt. Treat Keychain storage as protecting about as much as a mode-600 file does against code running as you; it still keeps the token out of repositories, logs and other users' reach. The Windows Credential Manager and Linux `secret-tool` paths have been exercised only by automated tests, not on a real machine.
-- `token clear` removes this tool's own entry and the token file. It does not touch `FIGMA_TOKEN` or the macOS `figma-pat` item, and says so when either is still found.
+- `token clear` removes this tool's own entry and the token file. It does not touch `FIGMA_TOKEN` or the Keychain item named by `FIGMA_TOKEN_KEYCHAIN_SERVICE`, and says so when either is still found (unset the variable to stop using that item).
 
 ## Source files
 

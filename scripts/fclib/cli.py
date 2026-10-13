@@ -727,9 +727,11 @@ def _source_note(source: str) -> Optional[str]:
     if source == "env":
         return ("The token comes from the FIGMA_TOKEN environment variable; `token clear` does not touch it. "
                 "Remove it from your shell profile to stop using it.")
-    if source == "keychain:figma-pat":
-        return ("This is the older Keychain item 'figma-pat', not this tool's own entry. `token clear` does not "
-                "remove it; delete it yourself in Keychain Access (search 'figma-pat') if you want it gone.")
+    if source.startswith("keychain:"):
+        service = _clean(source.split(":", 1)[1])
+        return ("This is the Keychain item '%s' named by FIGMA_TOKEN_KEYCHAIN_SERVICE, not this tool's own "
+                "entry. `token clear` does not remove it: unset FIGMA_TOKEN_KEYCHAIN_SERVICE to stop using it "
+                "(the item itself stays in Keychain Access)." % service)
     return None
 
 

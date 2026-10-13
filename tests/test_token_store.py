@@ -17,8 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from fclib import token_store as ts  # noqa: E402
 
 SECRET = "figd_unit-test-secret_0123456789"
-CMD_UNIX = "python3 scripts/figma_comments.py token set --expires YYYY-MM-DD"
-CMD_WIN = "py scripts\\figma_comments.py token set --expires YYYY-MM-DD"
+SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "figma_comments.py")
+# the absolute path, quoted: the hint works from any folder, a path with spaces included
+CMD_UNIX = "python3 '%s' token set --expires YYYY-MM-DD" % SCRIPT
+CMD_WIN = 'py "%s" token set --expires YYYY-MM-DD' % SCRIPT
 
 
 def cp(returncode=0, stdout="", stderr=""):
@@ -115,12 +117,32 @@ class MacosTests(StoreTestCase):
             ["security", "find-generic-password", "-s", "figma-comments", "-a", "personal-access-token", "-w"],
         )
 
-    def test_macos_falls_back_to_legacy_figma_pat(self):
+    def test_macos_does_not_read_any_other_keychain_item_by_default(self):
+        with mock.patch.object(ts.subprocess, "run", return_value=cp(44, "", "not found")) as run:
+            with self.assertRaises(ts.TokenMissing):
+                ts.get_token({})
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("figma-pat", run.call_args[0][0])
+
+    def test_macos_reads_the_service_named_by_the_opt_in_variable(self):
         replies = [cp(44, "", "not found"), cp(0, "figd_legacy\n")]
         with mock.patch.object(ts.subprocess, "run", side_effect=replies) as run:
-            info = ts.get_token({})
+            info = ts.get_token({"FIGMA_TOKEN_KEYCHAIN_SERVICE": " figma-pat "})
         self.assertEqual(info, ts.TokenInfo("figd_legacy", None, "keychain:figma-pat"))
-        self.assertIn("figma-pat", run.call_args_list[1][0][0])
+        self.assertEqual(run.call_args_list[1][0][0], ["security", "find-generic-password", "-s", "figma-pat", "-w"])
+
+    def test_macos_own_item_comes_before_the_opt_in_service(self):
+        with mock.patch.object(ts.subprocess, "run", return_value=cp(0, stored_json() + "\n")) as run:
+            info = ts.get_token({"FIGMA_TOKEN_KEYCHAIN_SERVICE": "figma-pat"})
+        self.assertEqual(info.source, "keychain")
+        self.assertEqual(run.call_count, 1)
+
+    def test_opt_in_service_with_a_control_character_is_refused(self):
+        with mock.patch.object(ts.subprocess, "run", return_value=cp(44)) as run:
+            with self.assertRaises(ts.TokenMissing) as cm:
+                ts.get_token({"FIGMA_TOKEN_KEYCHAIN_SERVICE": "figma\npat"})
+        self.assertIn("FIGMA_TOKEN_KEYCHAIN_SERVICE", str(cm.exception))
+        self.assertEqual(run.call_count, 1)  # only this tool's own item was looked up
 
     def test_macos_nothing_anywhere_names_the_setup_command(self):
         with mock.patch.object(ts.subprocess, "run", return_value=cp(44)):
@@ -209,6 +231,12 @@ class LinuxTests(StoreTestCase):
             info = ts.get_token({})
         self.assertEqual(info, ts.TokenInfo(SECRET, None, "file"))
         self.assertIsNone(ts.days_left(info, date(2026, 10, 13)))
+
+    def test_opt_in_keychain_service_is_ignored_off_macos(self):
+        with mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool")) as run:
+            with self.assertRaises(ts.TokenMissing):
+                ts.get_token({"FIGMA_TOKEN_KEYCHAIN_SERVICE": "figma-pat"})
+        self.assertFalse(any("security" in call[0][0] for call in run.call_args_list))
 
     def test_linux_nothing_anywhere_names_the_setup_command(self):
         with mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool")):

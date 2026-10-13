@@ -566,10 +566,11 @@ class TokenStatusCli(CliBase):
         self.assertIn("EXPIRED", self.status(info(-2))[1])
         self.assertIn("unknown", self.status(info(None))[1])
 
-    def test_legacy_keychain_item_is_explained(self):
+    def test_opt_in_keychain_item_is_explained(self):
         code, out, err = self.status(info(None, "keychain:figma-pat"))
         self.assertEqual(code, 0)
-        self.assertIn("figma-pat", out)
+        self.assertIn("'figma-pat'", out)
+        self.assertIn("FIGMA_TOKEN_KEYCHAIN_SERVICE", out)
         self.assertIn("token clear", out)
         self.assertIn("does not remove", out)
 
@@ -607,9 +608,10 @@ class TokenClearCli(CliBase):
         self.assertIn("FIGMA_TOKEN", out)
         self.assertNotIn(SECRET, out + err)
 
-    def test_legacy_item_remains(self):
+    def test_opt_in_item_remains(self):
         code, out, err, _ = self.clear(info(None, "keychain:figma-pat"))
-        self.assertIn("figma-pat", out)
+        self.assertIn("'figma-pat'", out)
+        self.assertIn("unset FIGMA_TOKEN_KEYCHAIN_SERVICE", out)
         self.assertIn("Keychain Access", out)
         self.assertNotIn(SECRET, out + err)
 

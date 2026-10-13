@@ -5,7 +5,10 @@ Lookup order in ``get_token``:
 1. environment: ``FIGMA_TOKEN`` (+ optional ``FIGMA_TOKEN_EXPIRES`` as YYYY-MM-DD);
 2. the OS credential store: macOS Keychain, Windows Credential Manager (ctypes),
    Linux Secret Service (``secret-tool``);
-3. the opt-in file ``~/.config/figma-comments/token.json`` (POSIX only, mode 600). It is
+3. macOS only, opt-in: ``FIGMA_TOKEN_KEYCHAIN_SERVICE=<service>`` names a generic-password
+   Keychain item that holds a raw token (source ``keychain:<service>``). No other item is
+   ever read: without the variable, a token kept elsewhere in the Keychain is not used;
+4. the opt-in file ``~/.config/figma-comments/token.json`` (POSIX only, mode 600). It is
    refused, never used, when it or its directory is a symlink, when another user owns it
    or when any group/other permission bit is set (the message names ``chmod 600``).
 
@@ -31,12 +34,13 @@ from typing import Any, Mapping, Optional
 SERVICE = "figma-comments"
 ACCOUNT = "personal-access-token"
 
-# Service name of the author's pre-existing macOS Keychain item (a raw token, no JSON).
-LEGACY_MACOS_SERVICE = "figma-pat"
+# macOS: the service of a Keychain item the designer already keeps their token in (a raw
+# token or this tool's JSON). Read only when this variable names it.
+KEYCHAIN_SERVICE_ENV = "FIGMA_TOKEN_KEYCHAIN_SERVICE"
 
 _TIMEOUT = 60  # seconds for helper processes (security, secret-tool)
 
-_SETUP_ARGS = "figma_comments.py token set --expires YYYY-MM-DD"
+_SETUP_ARGS = "token set --expires YYYY-MM-DD"
 
 
 @dataclass(frozen=True)
@@ -75,10 +79,17 @@ def _token_file() -> Path:
     return Path.home() / ".config" / "figma-comments" / "token.json"
 
 
+def _script_path() -> str:
+    """The absolute path of scripts/figma_comments.py: the hint must work from any folder."""
+    return str(Path(__file__).resolve().parent.parent / "figma_comments.py")
+
+
 def _setup_command() -> str:
+    """The command that stores a token, with the script's absolute path quoted for the shell
+    (double quotes for PowerShell and cmd.exe, single quotes for POSIX shells)."""
     if _platform() == "win32":
-        return "py scripts\\" + _SETUP_ARGS
-    return "python3 scripts/" + _SETUP_ARGS
+        return 'py "%s" %s' % (_script_path(), _SETUP_ARGS)
+    return "python3 '%s' %s" % (_script_path().replace("'", "'\\''"), _SETUP_ARGS)
 
 
 def _missing_message() -> str:
@@ -142,7 +153,7 @@ def _run(args: list, stdin: Optional[str] = None) -> Optional["subprocess.Comple
 # escaping `\` and `"` and wrapping the value in double quotes); a second `-U` call
 # updated the item in place; `delete-generic-password` removed it. In `-i` mode the exit
 # code of the last command is propagated (unknown command -> 1, missing item -> 44).
-# The real `figma-pat` and `figma-comments` items were not touched by the measurement.
+# The designer's own Keychain items were not touched by the measurement.
 
 
 def _quote_for_security(value: str) -> str:
@@ -372,14 +383,25 @@ def _write_file(raw: str) -> None:
 # --------------------------------------------------------------------------- public API
 
 
-def _read_os_store(plat: str) -> Optional[TokenInfo]:
+def _opt_in_service(env: Mapping[str, str]) -> Optional[str]:
+    """The Keychain service named by FIGMA_TOKEN_KEYCHAIN_SERVICE, or None when it is unset."""
+    service = env.get(KEYCHAIN_SERVICE_ENV, "").strip()
+    if not service:
+        return None
+    if not service.isprintable():
+        raise TokenMissing("%s must be a plain Keychain service name "
+                           "(no line breaks or control characters)." % KEYCHAIN_SERVICE_ENV)
+    return service
+
+
+def _read_os_store(plat: str, env: Mapping[str, str] = os.environ) -> Optional[TokenInfo]:
     if plat == "darwin":
         info = _parse_stored(_macos_read(), "keychain")
         if info is not None:
             return info
-        legacy = (_macos_read(LEGACY_MACOS_SERVICE, None) or "").strip()
-        if legacy:
-            return TokenInfo(legacy, None, "keychain:" + LEGACY_MACOS_SERVICE)
+        service = _opt_in_service(env)
+        if service is not None:
+            return _parse_stored(_macos_read(service, None), "keychain:" + service)
         return None
     if plat == "win32":
         try:
@@ -417,7 +439,7 @@ def get_token(env: Mapping[str, str] = os.environ) -> TokenInfo:
                 raise TokenMissing("FIGMA_TOKEN_EXPIRES must be a date in YYYY-MM-DD format.") from None
         return TokenInfo(value, expires, "env")
 
-    info = _read_os_store(_platform())
+    info = _read_os_store(_platform(), env)
     if info is not None:
         return info
     info = _read_file()
@@ -456,8 +478,8 @@ def set_token(token: str, expires: Optional[date], allow_file: bool = False) -> 
 def clear_token() -> None:
     """Remove the token from the OS store and the file. Missing entries are not an error.
 
-    The macOS legacy item (service ``figma-pat``) belongs to the user, not to this tool,
-    and is deliberately left alone; ``token status`` shows when it is the active source.
+    A Keychain item named by FIGMA_TOKEN_KEYCHAIN_SERVICE belongs to the user, not to this
+    tool, and is deliberately left alone; ``token status`` shows when it is the active source.
     """
     plat = _platform()
     if plat == "darwin":

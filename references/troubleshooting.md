@@ -8,7 +8,7 @@ Never diagnose by printing the token. `echo $FIGMA_TOKEN`, `env`, `env | grep FI
 
 ## Token missing
 
-Where the CLI looks, in order: the `FIGMA_TOKEN` environment variable (with optional `FIGMA_TOKEN_EXPIRES=YYYY-MM-DD`), then the OS credential store, then the opt-in file. Missing everywhere: the designer runs `token set --expires YYYY-MM-DD` in their own terminal (setup steps in SKILL.md, "Get a token").
+Where the CLI looks, in order: the `FIGMA_TOKEN` environment variable (with optional `FIGMA_TOKEN_EXPIRES=YYYY-MM-DD`), then the OS credential store, then on macOS the Keychain item named by `FIGMA_TOKEN_KEYCHAIN_SERVICE` (only if set), then the opt-in file. Missing everywhere: the designer runs `token set --expires YYYY-MM-DD` in their own terminal (setup steps in SKILL.md, "Get a token"). The error message gives the full command with the absolute, quoted path of `scripts/figma_comments.py`, so it can be pasted from any folder.
 
 A set `FIGMA_TOKEN` wins over the stored token. If `token status` shows source `env` with an old token, the designer removes it from their shell profile.
 
@@ -55,7 +55,7 @@ Use the launcher: `py "<skill_dir>\scripts\figma_comments.py" <command>`. `pytho
 
 ## macOS: old token still found after `token clear`
 
-`token clear` removes only this tool's own Keychain item (service `figma-comments`). An older Keychain item with service `figma-pat` belongs to the designer and is deliberately left alone, but it is still read as a fallback: `token status` then shows source `keychain:figma-pat`. If the designer wants it gone, they delete it themselves in Keychain Access (search "figma-pat"). Do not delete credentials for them.
+`token clear` removes only this tool's own Keychain item (service `figma-comments`). Another Keychain item is read only when the designer names its service in `FIGMA_TOKEN_KEYCHAIN_SERVICE` (macOS only; for example `figma-pat` for a token kept there before this tool existed): `token status` then shows source `keychain:<service>`. That item belongs to the designer and `token clear` leaves it alone; to stop using it they unset the variable, and if they want it gone they delete it themselves in Keychain Access. Do not delete credentials for them. A token that sits in some other Keychain item and is not named that way is simply not found: the fix is `token set`, or setting the variable.
 
 ## Commands return fixture data or no real comments
 
