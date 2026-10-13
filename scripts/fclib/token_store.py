@@ -5,7 +5,9 @@ Lookup order in ``get_token``:
 1. environment: ``FIGMA_TOKEN`` (+ optional ``FIGMA_TOKEN_EXPIRES`` as YYYY-MM-DD);
 2. the OS credential store: macOS Keychain, Windows Credential Manager (ctypes),
    Linux Secret Service (``secret-tool``);
-3. the opt-in file ``~/.config/figma-comments/token.json`` (POSIX only, mode 600).
+3. the opt-in file ``~/.config/figma-comments/token.json`` (POSIX only, mode 600). It is
+   refused, never used, when it or its directory is a symlink, when another user owns it
+   or when any group/other permission bit is set (the message names ``chmod 600``).
 
 The secret kept in a store is JSON: ``{"token": "...", "expires": "YYYY-MM-DD"}``.
 
@@ -18,6 +20,7 @@ import ctypes
 import functools
 import json
 import os
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -294,22 +297,66 @@ def _file_backend_allowed() -> bool:
     return _platform() != "win32"  # NTFS has no mode 600; Windows always has Credential Manager
 
 
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _link_refusal(path: Path, verb: str) -> str:
+    return ("%s is a symbolic link; the token is not %s through a link. "
+            "Remove the link and run token set --allow-file again." % (path, verb))
+
+
+def _check_token_file(path: Path, st: os.stat_result) -> None:
+    """Refuse a token file that is a link, not ours, or open to the group or others."""
+    if stat.S_ISLNK(st.st_mode):
+        raise TokenMissing(_link_refusal(path, "read"))
+    if not stat.S_ISREG(st.st_mode):
+        raise TokenMissing("%s is not a regular file; remove it and run token set --allow-file again." % path)
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and st.st_uid != getuid():
+        raise TokenMissing("%s is owned by another user; it is not read. Remove it and run token set "
+                           "--allow-file again as yourself." % path)
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & 0o077:
+        raise TokenMissing("%s can be read or changed by other users (mode %03o), so it is not used. "
+                           "Fix it with: chmod 600 %s" % (path, mode, path))
+
+
 def _read_file() -> Optional[TokenInfo]:
+    """The opt-in token file, or None when there is none.
+
+    Checked with lstat before it is opened (and with fstat on the open file): a symlinked
+    config directory or token file, a file owned by someone else, or one with any group or
+    other permission bit raises TokenMissing naming the fix; it is never used.
+    """
     if not _file_backend_allowed():
         return None
+    path = _token_file()
     try:
-        raw = _token_file().read_text(encoding="utf-8")
-    except OSError:
+        if stat.S_ISLNK(os.lstat(str(path.parent)).st_mode):
+            raise TokenMissing(_link_refusal(path.parent, "read"))
+        _check_token_file(path, os.lstat(str(path)))
+        fd = os.open(str(path), os.O_RDONLY | _NOFOLLOW)
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise TokenMissing("%s cannot be read (%s)." % (path, exc.strerror or type(exc).__name__)) from None
+    with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        _check_token_file(path, os.fstat(handle.fileno()))
+        raw = handle.read()
     return _parse_stored(raw, "file")
 
 
 def _write_file(raw: str) -> None:
     path = _token_file()
+    for p in (path.parent, path):
+        if p.is_symlink():
+            raise ValueError(_link_refusal(p, "written"))
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.parent.is_symlink():  # created by someone else in between
+        raise ValueError(_link_refusal(path.parent, "written"))
     os.chmod(str(path.parent), 0o700)
     tmp = path.with_name(path.name + ".tmp%d" % os.getpid())
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(raw)

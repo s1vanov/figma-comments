@@ -252,10 +252,86 @@ class FileFallbackTests(StoreTestCase):
     def test_file_is_read_even_when_never_written_by_us(self):
         self.token_file.parent.mkdir(parents=True)
         self.token_file.write_text(stored_json())
+        os.chmod(str(self.token_file), 0o600)
         with mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool")):
             info = ts.get_token({})
         self.assertEqual(info.source, "file")
         self.assertEqual(info.token, SECRET)
+
+    def no_store(self):
+        patcher = mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def put_file(self, mode=0o600):
+        self.token_file.parent.mkdir(parents=True, exist_ok=True)
+        self.token_file.write_text(stored_json())
+        os.chmod(str(self.token_file), mode)
+
+    def test_file_readable_by_group_or_others_is_refused_naming_the_fix(self):
+        self.no_store()
+        for mode in (0o644, 0o640, 0o604, 0o660, 0o602):
+            self.put_file(mode)
+            with self.assertRaises(ts.TokenMissing, msg=oct(mode)) as cm:
+                ts.get_token({})
+            message = str(cm.exception)
+            self.assertIn("chmod 600 %s" % self.token_file, message)
+            self.assertNotIn(SECRET, message)
+
+    def test_file_owned_by_someone_else_is_refused(self):
+        self.no_store()
+        self.put_file()
+        with mock.patch.object(ts.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(ts.TokenMissing) as cm:
+                ts.get_token({})
+        self.assertIn("owned by another user", str(cm.exception))
+        self.assertNotIn(SECRET, str(cm.exception))
+
+    def test_symlinked_token_file_is_refused(self):
+        self.no_store()
+        real = Path(self._tmp.name) / "real.json"
+        real.write_text(stored_json())
+        os.chmod(str(real), 0o600)
+        self.token_file.parent.mkdir(parents=True)
+        os.symlink(str(real), str(self.token_file))
+        with self.assertRaises(ts.TokenMissing) as cm:
+            ts.get_token({})
+        self.assertIn("symbolic link", str(cm.exception))
+        with self.assertRaises(ValueError):
+            ts.set_token(SECRET, None, allow_file=True)
+        self.assertEqual(real.read_text(), stored_json())  # the link target was not replaced
+
+    def test_symlinked_config_directory_is_refused_for_reading_and_writing(self):
+        self.no_store()
+        elsewhere = Path(self._tmp.name) / "elsewhere"
+        elsewhere.mkdir(mode=0o755)
+        os.chmod(str(elsewhere), 0o755)
+        (elsewhere / "token.json").write_text(stored_json())
+        os.chmod(str(elsewhere / "token.json"), 0o600)
+        self.token_file.parent.parent.mkdir(parents=True)
+        os.symlink(str(elsewhere), str(self.token_file.parent))
+        with self.assertRaises(ts.TokenMissing) as cm:
+            ts.get_token({})
+        self.assertIn("symbolic link", str(cm.exception))
+        with self.assertRaises(ValueError) as cm2:
+            ts.set_token(SECRET, None, allow_file=True)
+        self.assertIn("symbolic link", str(cm2.exception))
+        self.assertEqual(stat.S_IMODE(elsewhere.stat().st_mode), 0o755)  # chmod did not follow the link
+        self.assertEqual((elsewhere / "token.json").read_text(), stored_json())
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "O_NOFOLLOW")
+    def test_file_is_written_with_o_nofollow(self):
+        self.no_store()
+        flags = []
+        real_open = os.open
+
+        def spy(path, flag, *args, **kwargs):
+            flags.append(flag)
+            return real_open(path, flag, *args, **kwargs)
+
+        with mock.patch.object(ts.os, "open", side_effect=spy):
+            ts.set_token(SECRET, None, allow_file=True)
+        self.assertTrue(flags and all(f & os.O_NOFOLLOW for f in flags))
 
 
 class WindowsMessageTests(StoreTestCase):
