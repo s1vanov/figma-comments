@@ -1,0 +1,251 @@
+"""`collect`: read the file's comments, classify the threads, write the next round file.
+
+Reads from Figma only. Writes `round-NN.md` and appends the round to `state.json`
+inside the workspace; it never writes to Figma (spec section 6).
+
+Which threads become blocks (spec 4.2 and 5.3):
+
+* NEW and CLIENT_REPLIED threads;
+* threads carried from an earlier round: their state action is `hold`, or `react` with a
+  leftover draft, and they are not closed now. They keep kind and draft, and are rendered
+  as `hold`;
+* excluded: closed threads, threads with an unknown author (their authors are reported),
+  and threads whose state action is `skip` (counted in `skipped` when they would
+  otherwise have been included).
+"""
+from __future__ import annotations
+
+import os
+import tempfile
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from .api import FigmaAPI
+from .model import (
+    AuthorSummary,
+    Group,
+    Participant,
+    Thread,
+    build_threads,
+    classify,
+    orphan_replies,
+    parse_ts,
+    unknown_authors,
+)
+from .participants import load_participants
+from .roundfile import _NODE_RE, RoundItem, RoundMeta, render_round
+from .state import WORKSPACE_DIR, ThreadState, ensure_workspace, load_state, save_state
+from .urls import FileRef, comment_link
+
+NO_ELEMENT = "(no element)"
+PARTICIPANTS_FILE = "participants.json"
+
+GROUP_LABELS = {
+    Group.NEW: "new",
+    Group.CLIENT_REPLIED: "client replied",
+    Group.WAITING_CLIENT: "waiting for client",
+    Group.READY_TO_CLOSE: "ready to close",
+    Group.RESOLVED: "resolved",
+    Group.INTERNAL: "internal",
+    Group.UNKNOWN_AUTHOR: "unknown author",
+}
+_BLOCK_LABELS = {Group.NEW: "new", Group.CLIENT_REPLIED: "client replied"}
+
+
+@dataclass
+class CollectResult:
+    round_path: Path
+    groups: Dict[Group, int]
+    unknown: List[AuthorSummary]
+    carried: int
+    skipped: int = 0
+    blocks: int = 0
+    orphans: int = 0
+    n: int = 0
+    threads: int = 0
+
+
+@dataclass
+class Snapshot:
+    """What Figma says about the file right now, classified."""
+
+    threads: List[Thread]
+    group_of: Dict[str, Group]  # root id -> group
+    people: Dict[str, Participant]
+    owner_id: str
+    orphans: int
+
+    @property
+    def counts(self) -> "Counter[Group]":
+        return Counter(self.group_of.values())
+
+    def unknown_summary(self) -> List[AuthorSummary]:
+        blocked = [t for t in self.threads if self.group_of[t.root_id] is Group.UNKNOWN_AUTHOR]
+        return unknown_authors(blocked, self.people, self.owner_id)
+
+
+def workspace_path(root: Path, file_key: str) -> Path:
+    """Where the workspace is, without creating it (read-only commands use this)."""
+    return Path(root) / WORKSPACE_DIR / file_key
+
+
+def fetch_snapshot(api: FigmaAPI, ref: FileRef, ws: Path) -> Snapshot:
+    comments = api.comments(ref.file_key)
+    me = api.me()
+    owner_id = str(me.get("id") or "") if isinstance(me, dict) else ""
+    if not owner_id:
+        raise ValueError("unexpected response: /v1/me has no user id")
+    people = load_participants(str(ws / PARTICIPANTS_FILE))
+    threads = build_threads(comments)
+    return Snapshot(
+        threads=threads,
+        group_of={t.root_id: classify(t, people, owner_id) for t in threads},
+        people=people,
+        owner_id=owner_id,
+        orphans=len(orphan_replies(comments)),
+    )
+
+
+def node_of(thread: Thread) -> Optional[str]:
+    """The node a thread hangs on, or None for a file-level comment."""
+    meta = thread.root.get("client_meta")
+    node_id = meta.get("node_id") if isinstance(meta, dict) else None
+    if isinstance(node_id, str) and node_id and _NODE_RE.fullmatch(node_id):
+        return node_id
+    return None
+
+
+def _uid(message: dict) -> str:
+    return str((message.get("user") or {}).get("id") or "")
+
+
+def _handle(message: dict, people: Dict[str, Participant]) -> str:
+    handle = (message.get("user") or {}).get("handle")
+    if not handle and _uid(message) in people:
+        handle = people[_uid(message)].handle
+    return str(handle or _uid(message) or "?")
+
+
+def _heading_author(thread: Thread, snap: Snapshot) -> Tuple[str, str]:
+    """(handle, side label) for a block heading: the latest client message's author.
+
+    A thread we started shows the client who answered, not us; a thread without any
+    client message (only possible for a carried block) shows its root author as team.
+    """
+    clients = [
+        m
+        for m in thread.messages
+        if _uid(m) != snap.owner_id and _uid(m) in snap.people and snap.people[_uid(m)].side == "client"
+    ]
+    if clients:
+        return _handle(clients[-1], snap.people), "client"
+    return _handle(thread.root, snap.people), "team"
+
+
+def _carry_state(ts: Optional[ThreadState]) -> bool:
+    if ts is None:
+        return False
+    return ts.action == "hold" or (ts.action == "react" and bool(ts.draft.strip()))
+
+
+def _utc_z(moment: datetime) -> str:
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_new_file(path: Path, text: str) -> None:
+    """Create `path` atomically; refuse to replace an existing file (it may hold the designer's edits)."""
+    if path.exists():
+        raise ValueError(
+            "%s already exists but state.json has no such round; move or delete it first "
+            "(collect never overwrites a round file)" % path.name
+        )
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectResult:
+    key = ref.file_key
+    ws = workspace_path(root, key)
+    state = load_state(ws)  # a missing workspace gives an empty State; corrupt state stops here
+    snap = fetch_snapshot(api, ref, ws)
+
+    included: List[Tuple[Thread, str, str, str]] = []  # (thread, group label, kind, draft)
+    skipped = 0
+    carried = 0
+    for thread in snap.threads:
+        group = snap.group_of[thread.root_id]
+        if group in (Group.RESOLVED, Group.UNKNOWN_AUTHOR):
+            continue
+        ts = state.threads.get(thread.root_id)
+        if ts is not None and ts.action == "skip":
+            if group in _BLOCK_LABELS:
+                skipped += 1
+            continue
+        if ts is not None and _carry_state(ts):
+            included.append((thread, "carried", ts.kind, ts.draft))
+            carried += 1
+        elif group in _BLOCK_LABELS:
+            included.append((thread, _BLOCK_LABELS[group], "", ""))
+    included.sort(key=lambda row: parse_ts(row[0].root["created_at"]))  # stable: ties keep API order
+
+    node_ids = [n for n in dict.fromkeys(node_of(row[0]) for row in included) if n]
+    names = api.nodes(key, node_ids) if node_ids else {}
+
+    n = len(state.rounds) + 1
+    collected_at = _utc_z(now)
+    items: List[RoundItem] = []
+    for thread, label, kind, draft in included:
+        node_id = node_of(thread)
+        author, side = _heading_author(thread, snap)
+        items.append(
+            RoundItem(
+                root_id=thread.root_id,
+                node_id=node_id,
+                node_name=names.get(node_id) if node_id else NO_ELEMENT,
+                author=author,
+                side_label=side,
+                group_label=label,
+                link=comment_link(key, node_id, thread.root_id),
+                messages=[
+                    (_handle(m, snap.people), str(m.get("created_at") or ""), str(m.get("message") or ""))
+                    for m in thread.messages
+                ],
+                kind=kind,
+                action="hold",
+                reply=draft,
+            )
+        )
+    # Render first: a ValueError here leaves the disk untouched.
+    text = render_round(RoundMeta(file_key=key, n=n, collected_at=collected_at), items)
+
+    ws = ensure_workspace(root, key)
+    round_path = ws / ("round-%02d.md" % n)
+    _write_new_file(round_path, text)
+    state.rounds.append({"n": n, "collected_at": collected_at})
+    save_state(ws, state)
+
+    return CollectResult(
+        round_path=round_path,
+        groups=snap.counts,
+        unknown=snap.unknown_summary(),
+        carried=carried,
+        skipped=skipped,
+        blocks=len(items),
+        orphans=snap.orphans,
+        n=n,
+        threads=len(snap.threads),
+    )
