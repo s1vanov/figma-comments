@@ -541,6 +541,37 @@ class ThreadLookupTests(CliBase):
         self.assertIn("--thread", out.getvalue())
 
 
+class StreamEncodingTests(unittest.TestCase):
+    """Windows pipes default to the ANSI code page: an agent reading the output must get UTF-8."""
+
+    def streams(self, tty):
+        class Stream(io.TextIOWrapper):
+            def isatty(self):
+                return tty
+
+        raw_out, raw_err = io.BytesIO(), io.BytesIO()
+        return raw_out, raw_err, Stream(raw_out, encoding="cp1252"), Stream(raw_err, encoding="cp1252")
+
+    def test_not_a_tty_is_switched_to_utf8(self):
+        raw_out, raw_err, out, err = self.streams(tty=False)
+        with mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err):
+            cli._reconfigure_streams()
+            sys.stdout.write("Привіт \u2705")
+            sys.stderr.write("помилка")
+            sys.stdout.flush()
+            sys.stderr.flush()
+        self.assertEqual(raw_out.getvalue(), "Привіт \u2705".encode("utf-8"))
+        self.assertEqual(raw_err.getvalue(), "помилка".encode("utf-8"))
+
+    def test_a_console_keeps_its_encoding_and_replaces_what_it_cannot_show(self):
+        raw_out, raw_err, out, err = self.streams(tty=True)
+        with mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err):
+            cli._reconfigure_streams()
+            sys.stdout.write("Hi \u041f")
+            sys.stdout.flush()
+        self.assertEqual(raw_out.getvalue(), b"Hi ?")
+
+
 class ProcessTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -568,6 +599,12 @@ class ProcessTests(unittest.TestCase):
         self.assertNotIn(b"UnicodeEncodeError", proc.stderr)
         self.assertNotIn(b"Traceback", proc.stderr)
         self.assertIn(b"unknown-1", proc.stdout)
+
+    def test_a_pipe_on_a_cp1252_system_gets_utf8(self):
+        proc = self.run_script("status", KEY, PYTHONIOENCODING="cp1252")
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        proc.stdout.decode("utf-8")  # strict: every byte is UTF-8
+        self.assertIn("У проді відступ".encode("utf-8"), proc.stdout)  # the unknown author's sample
 
     def test_collect_works_from_any_cwd_through_the_entry_script(self):
         proc = self.run_script("collect", KEY, PYTHONIOENCODING="cp1252")

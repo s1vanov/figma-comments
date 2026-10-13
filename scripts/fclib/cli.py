@@ -78,13 +78,29 @@ _EXPECTED_ERRORS = (
 # small helpers
 # ---------------------------------------------------------------------------
 
+def _isatty(stream: Any) -> bool:
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def _reconfigure_streams() -> None:
-    """A console that cannot show a character (cp1252, cp437) must not crash the command."""
+    """Output an agent can read on every system, and no crash on a narrow console.
+
+    A pipe or file (not a TTY) is switched to UTF-8: on Windows it would otherwise use the
+    ANSI code page (cp1252), turning Cyrillic into "?" for the agent reading it. A console
+    keeps its own encoding, and a character it cannot show (cp1252, cp437) becomes "?"
+    instead of crashing the command.
+    """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             try:
-                reconfigure(errors="replace")
+                if _isatty(stream):
+                    reconfigure(errors="replace")
+                else:
+                    reconfigure(encoding="utf-8", errors="replace")
             except (ValueError, OSError):
                 pass
 
