@@ -8,6 +8,8 @@ from __future__ import annotations
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
+from .model import parse_ts
+
 NODES_BATCH_SIZE = 100
 REACTION_EMOJI = ":white_check_mark:"
 FIRST_PAGE_NODE = "0:1"
@@ -16,6 +18,37 @@ FIRST_PAGE_NODE = "0:1"
 def _q(segment: str) -> str:
     """Quote one URL path segment so a crafted id cannot alter the path."""
     return urllib.parse.quote(str(segment), safe="")
+
+
+def _check_comment(comment: Any) -> None:
+    """ValueError naming the comment and the field when Figma sent a comment the code cannot use.
+
+    Every command sorts by ``created_at`` and decides sides by ``user.id``; a comment without
+    them would otherwise end in a KeyError deep inside. An id that is not ASCII digits is not
+    an error here (collect skips such comments) and is shown as "?" rather than echoed.
+    """
+    def bad(field: str, cid: str = "?") -> ValueError:
+        return ValueError("unexpected comment data from Figma (comment %s: %s)" % (cid, field))
+
+    if not isinstance(comment, dict):
+        raise bad("not an object")
+    raw_id = comment.get("id")
+    if raw_id is None or raw_id == "":
+        raise bad("id")
+    cid = str(raw_id)
+    cid = cid if cid.isascii() and cid.isdigit() else "?"
+    user = comment.get("user")
+    if not isinstance(user, dict):
+        raise bad("user", cid)
+    if user.get("id") is None:  # an empty id stays: it is shown as an unknown author "(no id)"
+        raise bad("user.id", cid)
+    created = comment.get("created_at")
+    if not isinstance(created, str):
+        raise bad("created_at", cid)
+    try:
+        parse_ts(created)
+    except ValueError:
+        raise bad("created_at", cid) from None
 
 
 class FigmaAPI:
@@ -29,6 +62,8 @@ class FigmaAPI:
         comments = data.get("comments") if isinstance(data, dict) else None
         if not isinstance(comments, list):
             raise ValueError("unexpected response")
+        for comment in comments:
+            _check_comment(comment)
         return comments
 
     def me(self) -> Dict[str, Any]:

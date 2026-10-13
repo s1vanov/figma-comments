@@ -31,9 +31,10 @@ class FakeClient:
 
 class CommentsTest(unittest.TestCase):
     def test_get_with_as_md_returns_list(self):
-        fake = FakeClient({"comments": [{"id": "c1"}, {"id": "c2"}]})
+        listed = [good("1"), good("2")]
+        fake = FakeClient({"comments": listed})
         result = FigmaAPI(fake).comments(KEY)
-        self.assertEqual(result, [{"id": "c1"}, {"id": "c2"}])
+        self.assertEqual(result, listed)
         self.assertEqual(
             fake.calls, [("GET", "/v1/files/%s/comments" % KEY, None, {"as_md": "true"})]
         )
@@ -50,6 +51,34 @@ class CommentsTest(unittest.TestCase):
     def test_real_shape_fixture(self):
         fake = FakeClient(load("shape-comments.json"))
         self.assertIsInstance(FigmaAPI(fake).comments(KEY), list)
+
+    def test_malformed_comment_data_names_the_comment_and_the_field(self):
+        cases = [
+            (lambda c: c.pop("created_at"), "comment 7: created_at"),
+            (lambda c: c.update(created_at=1760000000), "comment 7: created_at"),
+            (lambda c: c.update(created_at="yesterday"), "comment 7: created_at"),
+            (lambda c: c.pop("user"), "comment 7: user"),
+            (lambda c: c.update(user="someone"), "comment 7: user"),
+            (lambda c: c["user"].pop("id"), "comment 7: user.id"),
+            (lambda c: c.pop("id"), "comment ?: id"),
+        ]
+        for change, where in cases:
+            with self.subTest(where=where):
+                broken = good("7")
+                change(broken)
+                with self.assertRaises(ValueError) as ctx:
+                    FigmaAPI(FakeClient({"comments": [good("1"), broken]})).comments(KEY)
+                self.assertEqual(str(ctx.exception), "unexpected comment data from Figma (%s)" % where)
+
+    def test_a_comment_that_is_not_an_object_is_malformed(self):
+        with self.assertRaises(ValueError) as ctx:
+            FigmaAPI(FakeClient({"comments": ["x"]})).comments(KEY)
+        self.assertEqual(str(ctx.exception), "unexpected comment data from Figma (comment ?: not an object)")
+
+
+def good(cid):
+    return {"id": cid, "parent_id": "", "user": {"id": "u1", "handle": "U"},
+            "created_at": "2026-10-12T09:14:22.101Z", "message": "m", "reactions": []}
 
 
 class MeTest(unittest.TestCase):

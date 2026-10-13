@@ -93,6 +93,19 @@ class CommandTests(CliBase):
         self.assertNotIn("pwned", text)
         self.assertNotIn("4200104", text)
 
+    def test_malformed_comment_data_is_an_error_not_a_traceback(self):
+        put_participants(self.cwd)
+        path = self.replay / "comments.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        next(c for c in data["comments"] if c["id"] == "4200118").pop("created_at")
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        for argv in (("collect", KEY), ("status", KEY), ("status", KEY, "--thread", "4200109")):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual((code, quiet(err)),
+                                 (1, "error: unexpected comment data from Figma (comment 4200118: created_at)\n"))
+        self.assertFalse((self.ws / "round-01.md").exists())
+
     def test_collect_accepts_a_url(self):
         put_participants(self.cwd)
         url = "https://www.figma.com/design/%s/Name?node-id=1-2" % KEY
