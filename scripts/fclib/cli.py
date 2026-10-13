@@ -1,9 +1,10 @@
-"""Command line: `collect`, `participants list|set`, `status`.
+"""Command line: `collect`, `participants list|set`, `status`, `publish`, `retract`.
 
 Output is written for an agent that pays for every line it reads: each command prints a
 short summary, at most 10 items per list and a "...and N more" line (status and
 participants list take --all). Expected failures print `error: <text>` on stderr and exit
-with 1; usage errors exit with 2; nothing prints a traceback for them.
+with 1; usage errors exit with 2; nothing prints a traceback for them. `publish` and
+`retract` also exit with 2 when the confirm code does not match (nothing was written).
 
 Environment:
 * FIGMA_COMMENTS_REPLAY=<dir>  serve Figma from fixture files (tests, scenarios); no token
@@ -40,6 +41,7 @@ from .http import (
 )
 from .model import AuthorSummary, Group, Participant
 from .participants import SIDES, load_participants, save_participants
+from .publish import REASON_TEXT, CodeMismatch, Entry, PublishReport, publish, retract, stop_message
 from .replay import ReplayTransport
 from .roundfile import RoundParseError
 from .state import ensure_workspace
@@ -271,6 +273,154 @@ def cmd_participants_set(args: argparse.Namespace) -> int:
     return 0
 
 
+SNIPPET_LEN = 60
+_ACTION_LABEL = {"reply": "reply", "react": "react :white_check_mark:"}
+
+
+def _snippet(text: str, limit: int = SNIPPET_LEN) -> str:
+    """The first `limit` characters of the exact text, quoted; breaks and controls escaped."""
+    out = []
+    for ch in text[:limit]:
+        if ch == "\n":
+            out.append("\\n")
+        elif ch in ('"', "\\"):
+            out.append("\\" + ch)
+        elif not ch.isprintable():
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    return '"%s"%s' % ("".join(out), "…" if len(text) > limit else "")
+
+
+def _entry_line(entry: Entry, number: Optional[int] = None) -> List[str]:
+    head = "  %s%s · %s · %s" % (
+        "%d. " % number if number is not None else "",
+        _capped(entry.author), _clean(entry.root_id), _ACTION_LABEL[entry.action],
+    )
+    if entry.comment_id:
+        head += " %s" % _clean(entry.comment_id)
+    if entry.text is not None and entry.reason is None:
+        head += " · " + _snippet(entry.text)
+    lines = [head]
+    if entry.text is not None and entry.reason is None and "<!--" in entry.text:
+        lines.append('     warning: this reply contains "<!--"; Figma shows it as plain text, '
+                     "visible to the client")
+    return lines
+
+
+def _skip_lines(report: PublishReport) -> List[str]:
+    if not report.skipped:
+        return []
+    lines = ["Skipped (%d); left for the next run or for you to look at:" % len(report.skipped)]
+    for entry in report.skipped:
+        lines.append("  %s · %s · %s · %s" % (
+            _capped(entry.author), _clean(entry.root_id), entry.action,
+            REASON_TEXT[entry.reason] if entry.reason else "?"))
+    return lines
+
+
+def _recovered_lines(report: PublishReport, done: bool) -> List[str]:
+    if not report.recovered:
+        return []
+    lines = ["%s (%d); already in Figma from an earlier run whose answer was lost, nothing is posted again:"
+             % ("Recorded without writing" if done else "Will be recorded without writing", len(report.recovered))]
+    lines.extend(l for e in report.recovered for l in _entry_line(e))
+    return lines
+
+
+def _reason_counts(report: PublishReport) -> str:
+    counts: Dict[str, int] = {}
+    for entry in report.skipped:
+        name = entry.reason.value.replace("_", " ") if entry.reason else "?"
+        counts[name] = counts.get(name, 0) + 1
+    return ", ".join("%s %d" % item for item in counts.items())
+
+
+def _not_planned_line(report: PublishReport) -> str:
+    parts = ["%s %d" % (label, report.not_planned[key])
+             for key, label in (("hold", "hold"), ("skip", "skip"), ("published", "already published"))
+             if report.not_planned.get(key)]
+    return "Not in the plan: %s" % (", ".join(parts) if parts else "none")
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    path = Path(args.round_file)
+    try:
+        report = publish(_make_api(), path, confirm=args.confirm)
+    except CodeMismatch as exc:
+        print("error: %s" % _clean(exc), file=sys.stderr)
+        return 2
+    name = _clean(report.round_name)
+    if not report.confirmed:
+        replies = sum(1 for e in report.planned if e.action == "reply")
+        reactions = len(report.planned) - replies
+        lines = ["Plan for %s: %d %s, %d %s; skipped %d%s" % (
+            name, replies, "reply" if replies == 1 else "replies",
+            reactions, "reaction" if reactions == 1 else "reactions",
+            len(report.skipped), " (%s)" % _reason_counts(report) if report.skipped else "")]
+        lines.append(_not_planned_line(report))
+        if report.planned:
+            lines.append("Writes, in this order (the exact text that will be posted):")
+            for number, entry in enumerate(report.planned, 1):
+                lines.extend(_entry_line(entry, number))
+        lines.extend(_recovered_lines(report, done=False))
+        lines.extend(_skip_lines(report))
+        if report.error:
+            _emit(lines)
+            print("error: %s" % _clean(report.error), file=sys.stderr)
+            return 1
+        if report.planned or report.recovered:
+            lines.append("confirm code: %s" % report.code)
+            lines.append("Nothing was written. To publish exactly this: %s publish %s --confirm %s"
+                         % (PROG, _clean(args.round_file), report.code))
+        else:
+            lines.append("Nothing to publish.")
+        _emit(lines)
+        return 0
+
+    replies = sum(1 for e in report.published if e.action == "reply")
+    reactions = len(report.published) - replies
+    lines = ["Published from %s: %d %s, %d %s" % (
+        name, replies, "reply" if replies == 1 else "replies",
+        reactions, "reaction" if reactions == 1 else "reactions")]
+    lines.extend(l for e in report.published for l in _entry_line(e))
+    lines.extend(_recovered_lines(report, done=True))
+    lines.extend(_skip_lines(report))
+    if report.ready_links:
+        lines.append("Ready to close (%d); open each link in Figma and resolve the thread:" % len(report.ready_links))
+        lines.extend("  " + link for link in report.ready_links)
+    _emit(lines)
+    if report.error:
+        print("error: %s" % _clean(report.error), file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_retract(args: argparse.Namespace) -> int:
+    ref = parse_file_ref(args.ref)
+    try:
+        report = retract(_make_api(), ref.file_key, args.comment_id, confirm=args.confirm)
+    except CodeMismatch as exc:
+        print("error: %s" % _clean(exc), file=sys.stderr)
+        return 2
+    except (FigmaHTTPError, TransportError) as exc:
+        print("error: %s" % _clean(stop_message(exc, "retract")), file=sys.stderr)
+        return 1
+    if report.deleted:
+        _emit([
+            "Deleted your reply %s." % _clean(report.comment_id),
+            "The round file still shows it as published; collect reads Figma again next time.",
+        ])
+        return 0
+    quoted = ["  > " + _clean(line) for line in report.message.splitlines()] or ["  > (empty)"]
+    _emit(["Your reply %s will be deleted (this cannot be undone):" % _clean(report.comment_id)]
+          + quoted
+          + ["confirm code: %s" % report.code,
+             "Nothing was deleted. To delete it: %s retract %s %s --confirm %s"
+             % (PROG, _clean(args.ref), _clean(report.comment_id), report.code)])
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # parser and entry
 # ---------------------------------------------------------------------------
@@ -311,6 +461,18 @@ def build_parser() -> argparse.ArgumentParser:
     lead_group.add_argument("--no-lead", action="store_true", help="clear the lead mark")
     ps.add_argument("--handle", default=None, help="display name; default: taken from the comments")
     ps.set_defaults(func=cmd_participants_set)
+
+    p = sub.add_parser("publish", help="show what a round file would post; with --confirm, post it")
+    p.add_argument("round_file", help="path to .figma-comments/<file_key>/round-NN.md")
+    p.add_argument("--confirm", metavar="CODE", default=None,
+                   help="the code printed by the run without --confirm (bound to the file's exact content)")
+    p.set_defaults(func=cmd_publish)
+
+    p = sub.add_parser("retract", help="delete one of your own replies (shows it first; --confirm deletes)")
+    p.add_argument("ref", help="Figma file URL or file key")
+    p.add_argument("comment_id", help="id of your reply")
+    p.add_argument("--confirm", metavar="CODE", default=None, help="the code printed by the run without --confirm")
+    p.set_defaults(func=cmd_retract)
     return parser
 
 
