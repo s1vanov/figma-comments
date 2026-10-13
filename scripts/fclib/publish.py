@@ -11,6 +11,9 @@ A posted reply cannot be edited, so everything here refuses by default (spec 4.2
   mismatch: ``CodeMismatch``, exit 2, no request), and makes only the writes it lists; a
   write that would be planned now but was not listed (a thread reopened since the
   summary) is skipped as NOT_IN_SUMMARY;
+* only the latest round file may be published: a round file whose number is not
+  ``len(state.rounds)`` is refused (dry run and confirm, before any request), because the
+  collect that made a newer round already carried its unpublished drafts there;
 * one writer at a time per workspace: ``<ws>/.publish.lock`` (lock.py) is taken for a
   confirmed publish or retract, and by collect, and removed when it ends (SIGTERM included).
   An existing lock refuses the run (``LockBusy``) and is never removed automatically;
@@ -619,6 +622,7 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
         collected_at = parse_ts(meta.collected_at)
     except ValueError:
         raise ValueError("%s has an unreadable collection time" % round_path.name) from None
+    _check_latest(load_state(ws), meta)  # before the code check, so an old file is named as such
 
     if confirm is None:
         try:
@@ -643,10 +647,24 @@ def publish(api: FigmaAPI, round_path: Path, ws: Optional[Path] = None,
     return report
 
 
+def _check_latest(state: State, meta: RoundMeta) -> None:
+    """ValueError unless `meta` is the latest round in state.json.
+
+    Only the latest round may write: a collect after this file was made has already carried
+    its unpublished drafts into a newer file, and posting from both would answer the same
+    thread twice.
+    """
+    latest = len(state.rounds)
+    if meta.n != latest:
+        raise ValueError("this is round %02d but the latest is round %02d; publish the latest round file "
+                         "(run collect first if you need a fresh one)" % (meta.n, latest))
+
+
 def _publish(api: FigmaAPI, round_path: Path, ws: Path, raw: bytes, text: str, meta: RoundMeta,
              blocks: List[Block], collected_at: datetime, code: str,
              allowed: Optional[Set[Tuple[str, str, str]]]) -> PublishReport:
     state = load_state(ws)  # read under the lock in a confirmed run
+    _check_latest(state, meta)  # again under the lock: a collect may have run since the first check
     record = _round_record(state, meta)
     items = build_plan(blocks, state, meta)
 

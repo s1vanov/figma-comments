@@ -378,6 +378,17 @@ class PreviousRoundTests(CollectBase):
         self.assertEqual(by["4200116"].reply, "")
         self.assertEqual(result.carried, 2)
 
+    def test_a_block_without_a_marker_keeps_the_published_reply_in_state(self):
+        path = self.collect_first()
+        path.write_text(edit_block(path.read_text(encoding="utf-8"), "4200109", "edit", "hold", "Next draft"),
+                        encoding="utf-8")
+        state = load_state(self.ws)
+        state.threads["4200109"] = ThreadState(kind="edit", action="reply", published_reply="9100001")
+        save_state(self.ws, state)
+        self.second()
+        ts = load_state(self.ws).threads["4200109"]
+        self.assertEqual((ts.action, ts.draft, ts.published_reply), ("hold", "Next draft", "9100001"))
+
     def test_held_thread_resolved_meanwhile_keeps_its_draft(self):
         path = self.collect_first()
         path.write_text(edit_block(path.read_text(encoding="utf-8"), "4200109", "edit", "hold", "My draft"),

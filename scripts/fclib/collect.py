@@ -19,6 +19,10 @@ Which threads become blocks (spec 4.2 and 5.3):
   as published even where the file lacks the marker (publish saves state before it marks
   the file, and skips the marker when it cannot write it): a reply that really went out is
   never turned back into a draft that could be posted twice;
+* a carried reply draft with no publish record whose reply is already in Figma (a lost
+  answer of the previous round's publish, or a reply written by hand: the one owner reply
+  the previous round did not see) is recorded as published and not carried; of a
+  reply+react block only the reaction is carried (``_record_lost_replies``);
 * excluded: closed threads, threads with an unknown author (their authors are reported),
   and skipped threads. A skip hides a thread only until a client writes after it was
   decided (`skipped_through`); then the thread returns as "client replied".
@@ -31,7 +35,7 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .api import FigmaAPI
 from .lock import workspace_lock
@@ -47,6 +51,7 @@ from .model import (
     unknown_authors,
 )
 from .participants import load_participants
+from .publish import find_lost_reply
 from .roundfile import _ID_RE, _NODE_RE, Block, RoundItem, RoundMeta, RoundParseError, parse_round, render_round
 from .state import (
     State,
@@ -55,6 +60,7 @@ from .state import (
     ensure_workspace,
     load_state,
     round_published,
+    round_seen,
     save_state,
 )
 from .urls import FileRef, comment_link
@@ -88,6 +94,7 @@ class CollectResult:
     held_resolved: int = 0  # carried threads that were closed meanwhile (entry and draft kept)
     carried_from: Optional[str] = None  # name of the previous round file when it supplied blocks
     invalid_ids: int = 0  # comments left out because their id is not ASCII digits
+    recorded: int = 0  # carried drafts whose reply was found already in Figma and recorded
 
 
 @dataclass
@@ -295,17 +302,71 @@ def _apply_block(state: State, block: Block, collected_at: str) -> str:
             fate, draft = "carry", block.reply
     else:  # react
         fate, draft = ("done", "") if block.reacted else ("carry", "")
+    # A block without a marker says nothing about what went out before: the reply id that
+    # state.json already records (from this thread's earlier round) is kept.
+    published = block.published_reply or (existing.published_reply if existing else None)
     if fate == "carry":
         state.threads[root] = ThreadState(
             kind=block.kind, action="hold", draft=draft,
-            published_reply=block.published_reply, reacted=block.reacted,
+            published_reply=published, reacted=block.reacted,
         )
     else:
         state.threads[root] = ThreadState(
             kind=block.kind, action=block.action,
-            published_reply=block.published_reply, reacted=block.reacted,
+            published_reply=published, reacted=block.reacted,
         )
     return fate
+
+
+def _record_lost_replies(state: State, snap: Snapshot, prev_entry: Optional[Dict[str, Any]],
+                         record: Dict[str, Tuple[Optional[str], bool]],
+                         actions: Dict[str, str]) -> int:
+    """Record the owner's replies already in Figma for drafts about to be carried; return how many.
+
+    A carried draft with no publish record may still have gone out: a publish of the
+    previous round whose answer was lost, or the designer answering by hand. Only the
+    previous round's file could have posted it (publish refuses older rounds), so the test
+    is the one publish uses on that round: exactly one reply by the token owner that the
+    previous round did not see (``find_lost_reply``; by timestamp for a state.json without
+    a ``seen`` record). Such a reply is recorded as published, in the thread's entry and in
+    the previous round's ``published`` record, and the draft is not carried; for a
+    reply+react block only the reaction is carried. A thread the previous round did not
+    hold is left alone: nothing of this tool could have answered it in between.
+    `actions`: the block action of each draft carried from the previous file.
+    """
+    if prev_entry is None:
+        return 0
+    try:
+        since = parse_ts(str(prev_entry.get("collected_at")))
+    except ValueError:
+        return 0
+    seen_map = round_seen(prev_entry)
+    count = 0
+    for thread in snap.threads:
+        root = thread.root_id
+        ts = state.threads.get(root)
+        pending = _carry_state(ts)
+        if ts is None or pending is None or not pending[1].strip() or record.get(root, (None, False))[0]:
+            continue
+        action = actions.get(root, ts.action)
+        if action not in ("hold", "reply", "reply+react"):
+            continue
+        if seen_map is not None and root not in seen_map:
+            continue
+        lost = find_lost_reply(thread, since, snap.owner_id, None if seen_map is None else seen_map[root])
+        if not lost:
+            continue
+        if action == "reply+react" and not ts.reacted:
+            state.threads[root] = ThreadState(kind=ts.kind, action="reply+react", published_reply=lost)
+        else:
+            state.threads[root] = ThreadState(kind=ts.kind, action="reply", published_reply=lost,
+                                              reacted=ts.reacted)
+        published = prev_entry.get("published")
+        if not isinstance(published, dict):
+            published = prev_entry["published"] = {}
+        published[root] = {"reply": lost, "reacted": ts.reacted}
+        count += 1
+    return count
 
 
 def _read_previous_round(ws: Path, state: State, key: str) -> Tuple[Optional[str], List[Block]]:
@@ -404,6 +465,7 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
     prev_entry = next((r for r in state.rounds if r.get("n") == len(state.rounds)), None)
     record = round_published(prev_entry)
     from_file = set()
+    file_actions: Dict[str, str] = {}  # root -> block action of a draft carried from the file
     for block in prev_blocks:
         if block.root_id in record:
             reply_id, reacted = record[block.root_id]
@@ -411,6 +473,8 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
                             reacted=block.reacted or reacted)
         if _apply_block(state, block, last_collected or collected_at) == "carry":
             from_file.add(block.root_id)
+            file_actions[block.root_id] = block.action
+    recorded = _record_lost_replies(state, snap, prev_entry, record, file_actions)
 
     included: List[Tuple[Thread, str, str, str]] = []  # (thread, group label, kind, draft)
     skipped = carried = held_resolved = carried_file = 0
@@ -490,4 +554,5 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
         held_resolved=held_resolved,
         carried_from=carried_from if carried_file else None,
         invalid_ids=snap.invalid_ids,
+        recorded=recorded,
     )

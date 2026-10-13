@@ -201,6 +201,13 @@ def cmd_collect(args: argparse.Namespace) -> int:
             "carried %d unpublished blocks from %s"
             % (result.carried, result.carried_from or "earlier rounds (state.json)")
         )
+    if result.recorded:
+        lines.append(
+            "recorded %d %s already in Figma (a lost answer or a reply written by hand); "
+            "%s not carried, nothing is posted again"
+            % (result.recorded, "reply" if result.recorded == 1 else "replies",
+               "its draft is" if result.recorded == 1 else "their drafts are")
+        )
     if result.held_resolved:
         lines.append(
             "%d held threads were resolved meanwhile (drafts kept)" % result.held_resolved

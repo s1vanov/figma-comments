@@ -1175,5 +1175,115 @@ class RetractTests(PublishBase):
         self.assertNotEqual(retract_code("5", "hi"), retract_code("5", "hi!"))
 
 
+# ---------------------------------------------------------------------------
+# a collect between two steps of publish must never lead to a second reply
+# ---------------------------------------------------------------------------
+
+STALE = ("this is round 01 but the latest is round 02; publish the latest round file "
+         "(run collect first if you need a fresh one)")
+
+
+class CollectBetweenPublishTests(PublishBase):
+    def posts_to(self, root):
+        return [w for w in self.writes() if w["method"] == "POST" and (w["body"] or {}).get("comment_id") == root]
+
+    def collect_cli(self):
+        code, out, err = self.run_cli("collect", KEY)
+        self.assertEqual(code, 0, err)
+        return out
+
+    def latest_round(self):
+        return sorted(self.ws.glob("round-*.md"))[-1]
+
+    def test_an_older_round_file_is_refused_dry_run_and_confirm(self):
+        self.edit(("4200109", "edit", "reply", "Скоротили."))
+        code = self.dry_run().code
+        api, _ = api_for(self.replay)
+        collect(api, FileRef(KEY, None), self.cwd, NOW + timedelta(minutes=5))
+        with self.assertRaises(ValueError) as ctx:
+            self.dry_run()
+        self.assertEqual(str(ctx.exception), STALE)
+        with self.assertRaises(ValueError) as ctx:
+            publish(self.api(), self.round, confirm=code)
+        self.assertEqual(str(ctx.exception), STALE)
+        self.assertEqual(self.writes(), [])
+        self.assertFalse((self.ws / ".publish.lock").exists())
+
+    def test_path_a_collect_between_dry_run_and_confirm_posts_once(self):
+        self.edit(("4200109", "edit", "reply", "Скоротив до трьох слів."))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        confirm = self.code_from(out)
+        self.collect_cli()  # round 02 carries the draft
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", confirm)
+        self.assertEqual((code, quiet_err(err)), (1, "error: %s\n" % STALE))
+        self.assertEqual(self.writes(), [])
+
+        self.round = self.latest_round()
+        self.assertEqual(self.round.name, "round-02.md")
+        self.assertEqual(self.blocks()["4200109"].reply, "Скоротив до трьох слів.")
+        self.edit(("4200109", "edit", "reply", "Скоротив до трьох слів."))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out))
+        self.assertEqual(code, 0, err)
+        self.collect_cli()
+        self.round = self.latest_round()
+        self.assertNotIn("4200109", self.blocks())  # answered: waiting for the client
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Nothing to publish.", out)
+        self.assertEqual(len(self.posts_to("4200109")), 1)
+
+    def test_path_b_lost_reply_then_collect_records_it_and_posts_once(self):
+        self.edit(("4200115", "question", "reply", "Колір з брендбука."))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out),
+                                      env={"FIGMA_COMMENTS_REPLAY_FAIL": "1:lost"})
+        self.assertEqual(code, 1)
+        self.assertIsNone(self.blocks()["4200115"].published_reply)
+        lost = next(c["id"] for c in self.live()["comments"] if c.get("parent_id") == "4200115")
+
+        out = self.collect_cli()
+        self.assertIn("recorded 1 reply already in Figma", out)
+        self.assertEqual(load_state(self.ws).threads["4200115"].published_reply, lost)
+        self.round = self.latest_round()
+        self.assertNotIn("4200115", self.blocks())  # no draft carried, nothing to post again
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Nothing to publish.", out)
+        self.assertEqual(len(self.posts_to("4200115")), 1)
+
+    def test_lost_reply_of_reply_and_react_carries_only_the_reaction(self):
+        self.edit(("4200115", "question", "reply+react", "Колір з брендбука."))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out),
+                     env={"FIGMA_COMMENTS_REPLAY_FAIL": "1:lost"})
+        out = self.collect_cli()
+        self.assertIn("recorded 1 reply already in Figma", out)
+        self.round = self.latest_round()
+        block = self.blocks()["4200115"]
+        self.assertEqual((block.kind, block.action, block.reply), ("question", "hold", ""))
+        self.edit(("4200115", "question", "react"))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_cli("publish", self.rel_round(), "--confirm", self.code_from(out))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.posts_to("4200115")), 1)
+        self.assertEqual([w["path"] for w in self.writes()[1:]], [reactions_path("4200115")])
+
+    def test_an_owner_reply_seen_by_the_previous_round_is_not_taken_as_lost(self):
+        # 4200103 already has our reply 4200105 in round 01; a draft carried over must stay a draft
+        self.edit(("4200103", "edit", "reply", "Ще одна відповідь."))
+        out = self.collect_cli()
+        self.assertNotIn("already in Figma", out)
+        self.round = self.latest_round()
+        self.assertEqual(self.blocks()["4200103"].reply, "Ще одна відповідь.")
+
+
+def quiet_err(err):
+    return "".join(l + "\n" for l in err.splitlines() if not l.startswith("WARNING: FIGMA_COMMENTS_REPLAY"))
+
+
 if __name__ == "__main__":
     unittest.main()
