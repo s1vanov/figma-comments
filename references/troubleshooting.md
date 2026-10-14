@@ -75,7 +75,7 @@ The confirmation code is bound to the round file's exact bytes and to the saved 
 
 ## `publish` refuses a reply because of an invisible character
 
-A reply that holds a tag character, bidirectional control, LRM, RLM, ALM, zero-width space, word joiner, byte-order mark or a variation selector out of place (U+E0100 to U+E01EF, U+FE00 to U+FE0D, or U+FE0E/U+FE0F that does not directly follow a visible character) is not published. The message names the block and the code point (for example `U+200B`), and nothing was sent. The usual source is text pasted from a web page or a chat. Remove the character from the reply (retype that word if it is not visible), then run `publish` again. A zero-width joiner or non-joiner is allowed.
+A reply that holds a control character other than tab and newline (Unicode category Cc), a format character other than the zero-width joiner and non-joiner (category Cf: tag characters, bidirectional controls, LRM, RLM, ALM, zero-width space, word joiner, byte-order mark, soft hyphen, the invisible math operators and the rest of Cf), or a variation selector out of place (U+E0100 to U+E01EF, U+FE00 to U+FE0D, or U+FE0E/U+FE0F not directly after a visible character) is not published, whether the character is there as written or only shows up after markup is removed (`_` and `**` around a lone selector). The message names the block and the code point (for example `U+200B`), and nothing was sent. The usual source is text pasted from a web page or a chat. Remove the character from the reply (retype that word if it is not visible), then run `publish` again. A zero-width joiner or non-joiner, a tab and a newline are allowed.
 
 ## "this is round NN but the latest is round MM"
 

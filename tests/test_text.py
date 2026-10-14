@@ -1,7 +1,7 @@
 import unittest
 
 import tests  # noqa: F401  (runs tests/__init__.py, which puts scripts/ on sys.path)
-from fclib.text import normalize_outgoing
+from fclib.text import ForbiddenCharacter, normalize_outgoing
 
 
 class NormalizeOutgoingTests(unittest.TestCase):
@@ -63,6 +63,32 @@ class NormalizeOutgoingTests(unittest.TestCase):
         family = "\U0001F468‍\U0001F469‍\U0001F467"
         self.assertEqual(normalize_outgoing("Done " + family), "Done " + family)
         self.assertEqual(normalize_outgoing("می‌خ"), "می‌خ")
+
+    def test_markup_removal_cannot_expose_a_hidden_selector(self):
+        # the selector follows "_" / "*" in the input (allowed), but a space or nothing once the
+        # markers are removed; the normalized text is checked again
+        for text in ("hi _︎_", "**️**", "hi *️*", "ok ~~️~~"):
+            with self.assertRaises(ForbiddenCharacter, msg=repr(text)) as cm:
+                normalize_outgoing(text)
+            self.assertIn("U+FE0", str(cm.exception))
+
+    def test_other_control_and_format_characters_are_refused(self):
+        for ch, name in (("­", "U+00AD"), ("⁡", "U+2061"), ("\u0007", "U+0007"),
+                         ("\u0000", "U+0000"), ("\u001b", "U+001B"), ("\u0085", "U+0085"),
+                         ("\u007f", "U+007F"), ("᠎", "U+180E"), ("\U0001d173", "U+1D173")):
+            with self.assertRaises(ForbiddenCharacter, msg=name) as cm:
+                normalize_outgoing("Fixed the title" + ch + " as asked")
+            self.assertIn(name, str(cm.exception))
+            self.assertNotIn(ch, str(cm.exception))
+
+    def test_tab_newline_joiners_and_emoji_stay_allowed(self):
+        self.assertEqual(normalize_outgoing("a\tb\nc"), "a\tb\nc")
+        self.assertEqual(normalize_outgoing("a\r\nb"), "a\nb")
+        kiss = "\U0001F469‍❤️‍\U0001F468"
+        self.assertEqual(normalize_outgoing("Thanks " + kiss), "Thanks " + kiss)
+        self.assertEqual(normalize_outgoing("❤️"), "❤️")
+        self.assertEqual(normalize_outgoing("1️⃣ done"), "1️⃣ done")
+        self.assertEqual(normalize_outgoing("**❤️** ok"), "❤️ ok")
 
     def test_emoji_alone_is_text(self):
         self.assertEqual(normalize_outgoing("\U0001F44D"), "\U0001F44D")

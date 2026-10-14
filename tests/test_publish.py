@@ -326,16 +326,23 @@ class PlanTests(PublishBase):
         self.assertIn("https://evil.example/x", out)
 
     def test_summary_prints_every_line_of_a_reply_indented_with_invisible_characters_escaped(self):
-        self.edit(("4200109", "edit", "reply", "Перший рядок\n\nдру­гий\tрядок\nтретій 👨‍👩"))
+        self.edit(("4200109", "edit", "reply", "Перший рядок\n\nдругий\tрядок\nтретій \U0001F468\u200d\U0001F469"))
         code, out, err = self.run_cli("publish", self.rel_round())
         self.assertEqual(code, 0, err)
         self.assertIn("1. Olena · 4200109 · reply\n"
                       "     | Перший рядок\n"
                       "     |\n"
-                      "     | дру\\u00adгий\\u0009рядок\n"
-                      "     | третій 👨\\u200d👩\n", out)
-        self.assertNotIn("­", out)
-        self.assertNotIn("‍", out)
+                      "     | другий\\u0009рядок\n"
+                      "     | третій \U0001F468\\u200d\U0001F469\n", out)
+        self.assertNotIn("\u200d", out)
+
+    def test_a_soft_hyphen_in_a_reply_is_refused_not_escaped_and_posted(self):
+        self.edit(("4200109", "edit", "reply", "дру\u00adгий рядок"))
+        code, out, err = self.run_cli("publish", self.rel_round())
+        self.assertEqual(code, 1, out)
+        self.assertIn("block 4200109", err)
+        self.assertIn("U+00AD", err)
+        self.assertNotIn("\u00ad", out + err)
 
     def test_summary_escapes_variation_selectors_like_the_round_file(self):
         self.edit(("4200109", "edit", "reply", "Готово \u2764\ufe0f"))

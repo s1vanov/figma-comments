@@ -23,13 +23,14 @@ _FORBIDDEN_RE = re.compile(
 
 
 class ForbiddenCharacter(ValueError):
-    """The reply contains an invisible or text-direction character (named as U+XXXX)."""
+    """The reply contains a control, format or misplaced variation-selector character (named as U+XXXX)."""
 
     def __init__(self, ch: str) -> None:
         self.code_point = "U+%04X" % ord(ch)
         super().__init__(
-            "the reply contains the invisible character %s (a text-direction control, zero-width "
-            "character, tag character or variation selector out of place); remove it" % self.code_point
+            "the reply contains the invisible character %s (a control or format character such as a "
+            "text-direction control, zero-width character or tag character, or a variation selector "
+            "out of place); remove it" % self.code_point
         )
 
 
@@ -59,6 +60,29 @@ def hidden_selector(text: str, i: int) -> bool:
     return False
 
 
+_ALLOWED_CONTROLS = ("\n", "\t")
+_ALLOWED_FORMAT = ("\u200d", "\u200c")  # ZWJ and ZWNJ: emoji sequences and several scripts need them
+
+
+def _reject_hidden(text: str) -> None:
+    """Raise ForbiddenCharacter for the first character a reader would not see.
+
+    Refused: the listed set (``_FORBIDDEN_RE``), every control character (category Cc)
+    except newline and tab, every format character (category Cf) except ZWJ and ZWNJ, and a
+    variation selector out of place (``hidden_selector``). Characters that only look blank
+    (U+3164, U+2800, the Mongolian free variation selectors U+180B-180D) are not handled.
+    """
+    bad = _FORBIDDEN_RE.search(text)
+    if bad:
+        raise ForbiddenCharacter(bad.group(0))
+    for i, ch in enumerate(text):
+        category = unicodedata.category(ch)
+        if ((category == "Cc" and ch not in _ALLOWED_CONTROLS)
+                or (category == "Cf" and ch not in _ALLOWED_FORMAT)
+                or hidden_selector(text, i)):
+            raise ForbiddenCharacter(ch)
+
+
 def _has_text(text: str) -> bool:
     """A letter (L*), a digit (N*) or a symbol emoji (So). "_" and other punctuation are not text."""
     for ch in text:
@@ -75,18 +99,13 @@ def normalize_outgoing(text: str) -> str:
     paired emphasis markers are dropped, trailing whitespace on each line and
     leading/trailing blank lines are removed. Known side effect: "__init__" becomes
     "init", because paired double underscores are treated as bold markers.
-    Raises ForbiddenCharacter (a ValueError) for a tag character, bidi control, LRM/RLM/ALM,
-    ZWSP, word joiner or BOM anywhere in the text (ZWJ and ZWNJ are allowed), for a variation
-    selector other than one U+FE0E/FE0F after a visible character (``hidden_selector``), and ValueError
-    if nothing sendable remains: no letter, digit or symbol emoji.
+    Raises ForbiddenCharacter (a ValueError) for a hidden character (``_reject_hidden``:
+    control characters other than tab and newline, format characters other than ZWJ and ZWNJ,
+    a variation selector out of place), checked on the input and again on the result, and
+    ValueError if nothing sendable remains: no letter, digit or symbol emoji.
     """
-    bad = _FORBIDDEN_RE.search(text)
-    if bad:
-        raise ForbiddenCharacter(bad.group(0))
-    for i, ch in enumerate(text):
-        if hidden_selector(text, i):
-            raise ForbiddenCharacter(ch)
     text = _LINE_BREAK_RE.sub("\n", text)
+    _reject_hidden(text)
     text = _LINK_RE.sub(r"\1 (\2)", text)
     for pattern in _INLINE_PATTERNS:
         text = pattern.sub(r"\1", text)
@@ -97,6 +116,8 @@ def normalize_outgoing(text: str) -> str:
     while lines and not lines[-1].strip():
         lines.pop()
     result = "\n".join(lines)
+    # Again on the result: removing a marker can leave a selector after a space or at the start.
+    _reject_hidden(result)
 
     if not _has_text(result):
         raise ValueError("outgoing text is empty after normalization")

@@ -30,7 +30,7 @@ First version.
 
 Fixes from the audit made before the first release (14 October 2026):
 
-- Replies are shown in full in the dry run. The round file escapes every Unicode Cf character (ZWJ and ZWNJ between visible characters stay); a reply containing a tag character, bidirectional control, LRM, RLM, ALM, zero-width space, word joiner or byte-order mark is refused, with the block and code point named.
+- Replies are shown in full in the dry run. The round file escapes every Unicode Cf character (ZWJ and ZWNJ between visible characters stay); a reply containing a control character other than tab and newline (Cc), a format character other than ZWJ and ZWNJ (Cf) or a misplaced variation selector is refused, with the block and code point named; the check runs on the reply as written and again after markup is removed.
 - The confirmation code covers the file and the saved plan; a missing summary and a changed file or summary are separate exit-2 messages.
 - `publish` must run from the project folder; a round file outside `.figma-comments/<file_key>/` exits 1. A symlinked workspace, or one resolving outside the project folder, is refused by `collect`, `status`, `participants`, `publish` and `retract`.
 - "Written after collect" and lost-reply recovery use message ids (`rounds[n].seen` in `state.json`), not clocks; reactions still compare timestamps, and an old `state.json` falls back to timestamps.
@@ -46,6 +46,7 @@ From the whole-branch review (14 October 2026):
 - No second reply after a `collect` between the steps of `publish`: `publish` accepts only the latest round file (an older one exits 1, "this is round NN but the latest is round MM"); `collect` records a carried reply draft whose reply is already in Figma (the one owner reply the previous round did not see) instead of carrying it, and says "recorded N replies already in Figma"; a block without a marker keeps the reply id `state.json` already has.
 - Output to a pipe or a file is UTF-8 on every system (Windows pipes used the ANSI code page); a console keeps its encoding and replaces what it cannot show.
 - Variation selectors: the round file and the dry-run summary show U+E0100 to U+E01EF, U+FE00 to U+FE0D and a misplaced U+FE0E/U+FE0F as `\uXXXX`; a reply holding one is refused.
+- A hidden character can no longer reach Figma through markup or an unlisted class: the reply is checked again after markup is removed (`hi _` + U+FE0E + `_` used to post a selector after a space), and every Cc character but tab and newline and every Cf character but ZWJ and ZWNJ is refused (U+00AD, U+2061 and U+0007 used to be posted while the dry run showed them escaped).
 - `retract` says what happens to the thread next; it says "comes back" only where `collect` brings the thread back, and names the ✅ that keeps a thread ready to close.
 - The macOS Keychain item `figma-pat` is no longer read by default; `FIGMA_TOKEN_KEYCHAIN_SERVICE=<service>` reads a token from a Keychain item of the designer's choice (source `keychain:<service>`).
 - A skipped thread comes back by the message ids of the round that recorded the skip, not by comparing clocks; `status --thread` uses the same rule.
@@ -61,5 +62,5 @@ From the whole-branch review (14 October 2026):
 - Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (the CI matrix has not run yet), never on a real machine.
 - Not verified: an audit finding that Keychain items created through `/usr/bin/security` may be readable by other processes of the same user without a prompt, so Keychain storage may protect about as much as a mode-600 file against code running as you.
 - Recognising our own ✅ after a lost answer compares timestamps (reactions have no id), so a clock that is minutes off can shift it; harmless, because Figma does not add the same reaction twice.
-- Characters that only look blank (U+3164, U+2800 and the like) are not filtered; only Unicode Cf characters, variation selectors and control characters are handled.
+- Characters that only look blank (U+3164, U+2800, the Mongolian free variation selectors U+180B to U+180D and the like) are not filtered; only Unicode Cc and Cf characters and variation selectors are handled.
 - The `curl` fallback needs curl 7.55 or newer. A round file written by one version may be refused by the next; publish it before upgrading.
