@@ -20,7 +20,7 @@ import getpass
 import os
 import sys
 import warnings
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -638,11 +638,11 @@ def _prompt_line(prompt: str) -> str:
     return input(prompt)
 
 
-def _parse_iso_date(value: str) -> date:
+def _parse_iso_date(value: str, what: str = "the expiry date") -> date:
     try:
         return datetime.strptime(value.strip(), "%Y-%m-%d").date()
     except ValueError:
-        raise ValueError("the expiry date must look like YYYY-MM-DD") from None
+        raise ValueError("%s must look like YYYY-MM-DD" % what) from None
 
 
 def _expires_arg(value: str) -> date:
@@ -650,6 +650,78 @@ def _expires_arg(value: str) -> date:
         return _parse_iso_date(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def _created_arg(value: str) -> date:
+    try:
+        return _parse_iso_date(value, "the creation date")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+# Expiration choices in Figma's "Generate new token" dialog (Figma settings, checked 13 October
+# 2026). Another number of days is accepted with a note; 366 is a sanity limit, not a Figma one.
+FIGMA_EXPIRY_DAYS = (1, 7, 30, 90)
+DEFAULT_EXPIRY_DAYS = 90
+MAX_EXPIRY_DAYS = 366
+
+
+def _parse_days(value: str) -> int:
+    text = value.strip()
+    if not (text.isdigit() and text.isascii()) or not 1 <= int(text) <= MAX_EXPIRY_DAYS:
+        raise ValueError("the expiration must be a whole number of days from 1 to %d" % MAX_EXPIRY_DAYS)
+    return int(text)
+
+
+def _days_arg(value: str) -> int:
+    try:
+        return _parse_days(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+class _ExclusiveDate(argparse.Action):
+    """--expires (an exact date) cannot be combined with --created / --days (a computed one)."""
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+                 values: Any, option_string: Optional[str] = None) -> None:
+        others = ("created", "days") if self.dest == "expires" else ("expires",)
+        for other in others:
+            if getattr(namespace, other, None) is not None:
+                parser.error("argument %s: not allowed with argument --%s" % (option_string, other))
+        setattr(namespace, self.dest, values)
+
+
+CREATED_PROMPT = "When did you create this token in Figma? YYYY-MM-DD, Enter = today, 'unknown' if you don't know: "
+DAYS_PROMPT = "Expiration you chose in Figma, in days (1, 7, 30 or 90; Enter = %d): " % DEFAULT_EXPIRY_DAYS
+
+
+def _expiry_from_creation(created: Optional[date], days: Optional[int], today: date) -> Optional[date]:
+    """Ask for whichever of the creation date and the expiration is missing; None = unknown.
+
+    Raises ValueError for a creation date in the future, a malformed answer, or a result that
+    is already in the past. Prints a note when the days are not one of Figma's choices.
+    """
+    if created is None:
+        answer = _prompt_line(CREATED_PROMPT).strip()
+        if answer.lower() == "unknown":
+            return None
+        created = _parse_iso_date(answer, "the creation date") if answer else today
+    if created > today:
+        raise ValueError("the creation date %s is in the future; enter the day you created the token in Figma"
+                         % created)
+    if days is None:
+        answer = _prompt_line(DAYS_PROMPT).strip()
+        days = _parse_days(answer) if answer else DEFAULT_EXPIRY_DAYS
+    if days not in FIGMA_EXPIRY_DAYS:
+        print("note: Figma offers 1, 7, 30 or 90 days; using %d" % days)
+    # Figma shows the expiry as the creation date plus the chosen days. Not measured to the hour:
+    # if Figma counts from the creation time, the real end may be a day off, and doctor's 14-day
+    # warning margin absorbs that difference.
+    expires = created + timedelta(days=days)
+    if expires < today:
+        raise ValueError("that token has already expired (%s); create a new one" % expires)
+    return expires
 
 
 def _plural_days(n: int) -> str:
@@ -698,10 +770,12 @@ def cmd_token_set(args: argparse.Namespace) -> int:
     expires: Optional[date] = args.expires
     try:
         if expires is None:
-            answer = _prompt_line("Token expiry date, YYYY-MM-DD (Enter if unknown): ").strip()
-            expires = _parse_iso_date(answer) if answer else None
-        if expires is not None and expires < today:
+            expires = _expiry_from_creation(args.created, args.days, today)
+        elif expires < today:
             raise ValueError("that expiry date is in the past (%s); enter the date shown in Figma" % expires)
+        if expires is not None:
+            print("Expires %s (%s left)." % (expires, _plural_days((expires - today).days)))
+            sys.stdout.flush()
         token = _prompt_secret("Figma personal access token (input is hidden): ").strip()
     except (EOFError, KeyboardInterrupt):  # Ctrl-D / Ctrl-C at a prompt
         sys.stderr.write("\n")
@@ -712,9 +786,7 @@ def cmd_token_set(args: argparse.Namespace) -> int:
     lines = ["Token stored in: %s." % backend]
     if expires is None:
         lines.append("warning: expiry unknown, so no warning will come before the token stops working. "
-                     "Run `token set --expires YYYY-MM-DD` again when you know it.")
-    else:
-        lines.append("Expires %s (%s left)." % (expires, _plural_days((expires - today).days)))
+                     "When you know when you created it, run `token set` again.")
     if os.environ.get("FIGMA_TOKEN", "").strip():
         lines.append("note: FIGMA_TOKEN is set in this environment and takes precedence over the stored "
                      "token; unset it, or the stored one is never used.")
@@ -745,13 +817,13 @@ def cmd_token_status(args: argparse.Namespace) -> int:
     if left is None:
         lines.append("Expires: unknown")
     elif left < 0:
-        lines.append("Expires: %s -- EXPIRED %s ago. Generate a new token and run `token set --expires YYYY-MM-DD`."
+        lines.append("Expires: %s -- EXPIRED %s ago. Generate a new token and run `token set` again."
                      % (info.expires, _plural_days(-left)))
     else:
         lines.append("Expires: %s (%s left)" % (info.expires, _plural_days(left)))
         if left <= 14:
             lines.append("warning: 14 days or fewer left; generate a new token with the same scopes "
-                         "and run `token set --expires YYYY-MM-DD`.")
+                         "and run `token set` again.")
     note = _source_note(info.source)
     if note:
         lines.append(note)
@@ -839,8 +911,12 @@ def build_parser() -> argparse.ArgumentParser:
     tsub.required = True
 
     ts = tsub.add_parser("set", help="read the token with hidden input and store it (needs a terminal)")
-    ts.add_argument("--expires", metavar="YYYY-MM-DD", type=_expires_arg, default=None,
-                    help="the expiry date shown in Figma; asked for when omitted")
+    ts.add_argument("--created", metavar="YYYY-MM-DD", type=_created_arg, default=None, action=_ExclusiveDate,
+                    help="the day you created the token in Figma; asked for when omitted")
+    ts.add_argument("--days", metavar="N", type=_days_arg, default=None, action=_ExclusiveDate,
+                    help="the expiration you chose in Figma (1, 7, 30 or 90); asked for when omitted")
+    ts.add_argument("--expires", metavar="YYYY-MM-DD", type=_expires_arg, default=None, action=_ExclusiveDate,
+                    help="the exact expiry date instead of --created/--days")
     ts.add_argument("--allow-file", action="store_true",
                     help="where no OS credential store exists, keep the token in a mode-600 file")
     ts.set_defaults(func=cmd_token_set)

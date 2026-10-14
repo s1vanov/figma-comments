@@ -29,7 +29,7 @@ _PUBLIC_LINK_ACCESS = frozenset({"view", "edit"})
 _ORG_LINK_ACCESS = frozenset({"org_view", "org_edit"})
 
 _SHOWN_LIMIT = 40
-_NEW_TOKEN = "generate a new token with the same scopes and run `token set --expires YYYY-MM-DD`"
+_NEW_TOKEN = "generate a new token with the same scopes and run `token set` again"
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ def _token_checks(info: TokenInfo, today: date) -> List[Check]:
     left = days_left(info, today)
     if left is None:
         how = ("set FIGMA_TOKEN_EXPIRES=YYYY-MM-DD" if info.source == "env"
-               else "run `token set --expires YYYY-MM-DD` again to record it")
+               else "run `token set` again to record it")
         checks.append(Check("expiry", True,
                             "the expiry date is unknown, so nothing warns before it passes; " + how,
                             warning=True, detail="unknown"))

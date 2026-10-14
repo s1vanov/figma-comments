@@ -271,6 +271,16 @@ class ExpiryNotice(unittest.TestCase):
             "warning: Figma token has expired (2026-10-11); requests will fail with 403"), text)
         self.assertIn("token set", text)
 
+    def test_expiry_messages_say_run_token_set_again(self):
+        for d in (10, 0, -2):
+            text = expiry_notice(info(d), TODAY) or ""
+            self.assertNotIn("--expires", text)
+        self.assertIn("run `token set` again", expiry_notice(info(-2), TODAY))
+        for d in (None, 10, -3):
+            c = by_name(doctor(token=info(d))[0])["expiry"]
+            self.assertIn("run `token set` again", c.action, d)
+            self.assertNotIn("--expires", c.action)
+
     def test_never_contains_the_token(self):
         for d in (10, 0, -2):
             self.assertNotIn(SECRET, expiry_notice(info(d), TODAY))
@@ -368,7 +378,7 @@ class ExpiryWarningInCommands(unittest.TestCase):
 
 
 class TokenSetCli(CliBase):
-    def run_set(self, *argv, tty=True, secret=SECRET, answers=("",), today=TODAY):
+    def run_set(self, *argv, tty=True, secret=SECRET, answers=("", ""), today=TODAY):
         prompts = []
         line_answers = list(answers)
 
@@ -397,20 +407,133 @@ class TokenSetCli(CliBase):
         _, _, _, store, _, _ = self.run_set("--expires", "2026-12-31", "--allow-file")
         store.assert_called_once_with(SECRET, date(2026, 12, 31), allow_file=True)
 
-    def test_asks_for_the_expiry_when_omitted(self):
-        code, out, err, store, _, prompts = self.run_set(answers=("2027-01-05",))
-        self.assertEqual(code, 0)
-        store.assert_called_once_with(SECRET, date(2027, 1, 5), allow_file=False)
+    def test_enter_enter_means_created_today_for_90_days(self):
+        code, out, err, store, sec, prompts = self.run_set(answers=("", ""))
+        self.assertEqual(code, 0, err)
+        store.assert_called_once_with(SECRET, date(2027, 1, 11), allow_file=False)
+        self.assertEqual(prompts, [
+            "When did you create this token in Figma? YYYY-MM-DD, Enter = today, 'unknown' if you don't know: ",
+            "Expiration you chose in Figma, in days (1, 7, 30 or 90; Enter = 90): ",
+        ])
+        self.assertIn("Expires 2027-01-11 (90 days left)", out)
+        self.assertNotIn("Figma offers", out + err)
+        self.assertNotIn(SECRET, out + err + "".join(prompts))
+
+    def test_created_date_and_days_are_added(self):
+        code, out, err, store, _, _ = self.run_set(answers=("2026-10-13", "90"), today=date(2026, 10, 14))
+        self.assertEqual(code, 0, err)
+        store.assert_called_once_with(SECRET, date(2027, 1, 11), allow_file=False)
+        self.assertIn("Expires 2027-01-11 (89 days left)", out)
+
+    def test_the_expiry_is_shown_before_the_token_is_asked_for(self):
+        seen = []
+
+        def secret(prompt):
+            seen.append(sys.stdout.getvalue())  # run_cli redirects stdout to a StringIO
+            return SECRET
+
+        with mock.patch.object(cli, "_stdin_is_tty", return_value=True), \
+                mock.patch.object(cli, "_prompt_secret", side_effect=secret), \
+                mock.patch.object(cli, "_prompt_line", side_effect=["", "30"]), \
+                mock.patch.object(cli, "_today", return_value=TODAY), \
+                mock.patch.object(cli, "set_token", return_value="keychain"):
+            code, out, err = self.run_cli("token", "set", replay=False)
+        self.assertEqual(code, 0, err)
+        self.assertIn("Expires 2026-11-12 (30 days left)", seen[0])
+        self.assertEqual(out.count("Expires 2026-11-12"), 1)
+
+    def test_a_computed_date_in_the_past_is_refused_before_the_token_prompt(self):
+        code, out, err, store, sec, _ = self.run_set(answers=("2026-07-01", "30"))
+        self.assertEqual(code, 1)
+        self.assertIn("that token has already expired (2026-07-31); create a new one", err)
+        store.assert_not_called()
+        sec.assert_not_called()
+
+    def test_expiring_today_is_still_accepted(self):
+        code, out, err, store, _, _ = self.run_set(answers=("2026-10-06", "7"))
+        self.assertEqual(code, 0, err)
+        store.assert_called_once_with(SECRET, TODAY, allow_file=False)
+        self.assertIn("(0 days left)", out)
+
+    def test_a_creation_date_in_the_future_is_refused(self):
+        code, out, err, store, sec, prompts = self.run_set(answers=("2026-10-20", "90"))
+        self.assertEqual(code, 1)
+        self.assertIn("2026-10-20", err)
+        self.assertIn("future", err)
         self.assertEqual(len(prompts), 1)
-        self.assertIn("YYYY-MM-DD", prompts[0])
+        store.assert_not_called()
+        sec.assert_not_called()
+        code, out, err, store, sec, prompts = self.run_set("--created", "2026-10-20", "--days", "7")
+        self.assertEqual(code, 1)
+        self.assertIn("future", err)
+        sec.assert_not_called()
 
-    def test_empty_answer_means_unknown_expiry_with_a_warning(self):
-        code, out, err, store, _, _ = self.run_set(answers=("",))
-        self.assertEqual(code, 0)
-        store.assert_called_once_with(SECRET, None, allow_file=False)
-        self.assertIn("expiry unknown", out + err)
+    def test_flags_replace_the_questions(self):
+        code, out, err, store, _, prompts = self.run_set("--created", "2026-10-01", "--days", "30")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(prompts, [])
+        store.assert_called_once_with(SECRET, date(2026, 10, 31), allow_file=False)
+        self.assertIn("Expires 2026-10-31 (18 days left)", out)
 
-    def test_bad_expiry_is_refused_before_the_token_prompt(self):
+    def test_a_missing_flag_is_asked_for(self):
+        code, out, err, store, _, prompts = self.run_set("--created", "2026-10-01", answers=("",))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("in days", prompts[0])
+        store.assert_called_once_with(SECRET, date(2026, 12, 30), allow_file=False)
+        code, out, err, store, _, prompts = self.run_set("--days", "7", answers=("",))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("When did you create", prompts[0])
+        store.assert_called_once_with(SECRET, date(2026, 10, 20), allow_file=False)
+
+    def test_expires_with_created_or_days_is_a_usage_error(self):
+        for argv in (("--expires", "2026-12-31", "--days", "30"),
+                     ("--days", "30", "--expires", "2026-12-31"),
+                     ("--expires", "2026-12-31", "--created", "2026-10-01"),
+                     ("--created", "2026-10-01", "--expires", "2026-12-31")):
+            code, out, err, store, sec, prompts = self.run_set(*argv)
+            self.assertEqual(code, 2, argv)
+            self.assertIn("not allowed with", err)
+            store.assert_not_called()
+            sec.assert_not_called()
+
+    def test_unknown_creation_date_stores_an_unknown_expiry_with_a_warning(self):
+        for answer in ("unknown", "UNKNOWN "):
+            code, out, err, store, sec, prompts = self.run_set(answers=(answer,))
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(prompts), 1)
+            store.assert_called_once_with(SECRET, None, allow_file=False)
+            self.assertIn("expiry unknown", out + err)
+            self.assertIn("run `token set` again", out)
+            self.assertNotIn("--expires", out + err)
+            self.assertNotIn(SECRET, out + err)
+
+    def test_days_other_than_figma_choices_are_accepted_with_a_note(self):
+        code, out, err, store, _, _ = self.run_set(answers=("", "14"))
+        self.assertEqual(code, 0, err)
+        store.assert_called_once_with(SECRET, date(2026, 10, 27), allow_file=False)
+        self.assertIn("Figma offers 1, 7, 30 or 90 days; using 14", out)
+        for days in ("1", "7", "30", "90"):
+            out = self.run_set(answers=("", days))[1]
+            self.assertNotIn("Figma offers", out)
+
+    def test_days_must_be_a_whole_number_from_1_to_366(self):
+        for answer in ("0", "367", "-5", "ten", "1.5"):
+            code, out, err, store, sec, _ = self.run_set(answers=("", answer))
+            self.assertEqual(code, 1, answer)
+            self.assertIn("1 to 366", err)
+            store.assert_not_called()
+            sec.assert_not_called()
+        code, out, err, store, _, _ = self.run_set(answers=("2025-10-13", "366"))
+        self.assertEqual(code, 0, err)
+        store.assert_called_once_with(SECRET, date(2026, 10, 14), allow_file=False)
+        for argv in (("--days", "0"), ("--days", "400"), ("--days", "x"), ("--created", "13.10.2026")):
+            code, out, err, store, _, _ = self.run_set(*argv)
+            self.assertEqual(code, 2, argv)
+            store.assert_not_called()
+
+    def test_bad_creation_date_is_refused_before_the_token_prompt(self):
         code, out, err, store, sec, _ = self.run_set(answers=("next week",))
         self.assertEqual(code, 1)
         self.assertIn("YYYY-MM-DD", err)
@@ -501,16 +624,19 @@ class TokenSetPrompts(CliBase):
         store.assert_not_called()
         self.assertNotIn(SECRET, out + err)
 
-    def test_ctrl_d_at_the_expiry_prompt_cancels(self):
-        with mock.patch.object(cli, "_stdin_is_tty", return_value=True), \
-                mock.patch.object(cli, "_today", return_value=TODAY), \
-                mock.patch.object(cli, "_prompt_line", side_effect=EOFError), \
-                mock.patch.object(cli, "set_token", return_value="keychain") as store:
-            code, out, err = self.run_cli("token", "set", replay=False)
-        self.assertEqual(code, 1)
-        self.assertIn("cancelled; nothing was stored", err)
-        self.assertNotIn("unexpected failure", err)
-        store.assert_not_called()
+    def test_ctrl_d_or_ctrl_c_at_either_date_prompt_cancels(self):
+        for answers in ([EOFError], ["", EOFError], [KeyboardInterrupt], ["2026-10-01", KeyboardInterrupt]):
+            with mock.patch.object(cli, "_stdin_is_tty", return_value=True), \
+                    mock.patch.object(cli, "_today", return_value=TODAY), \
+                    mock.patch.object(cli, "_prompt_line", side_effect=answers), \
+                    mock.patch.object(cli, "_prompt_secret", return_value=SECRET) as sec, \
+                    mock.patch.object(cli, "set_token", return_value="keychain") as store:
+                code, out, err = self.run_cli("token", "set", replay=False)
+            self.assertEqual(code, 1, answers)
+            self.assertIn("cancelled; nothing was stored", err)
+            self.assertNotIn("unexpected failure", err)
+            store.assert_not_called()
+            sec.assert_not_called()
 
     def test_ctrl_c_and_ctrl_d_at_the_token_prompt_cancel(self):
         for exc in (KeyboardInterrupt, EOFError):
@@ -565,6 +691,10 @@ class TokenStatusCli(CliBase):
         self.assertIn("warning", self.status(info(5))[1])
         self.assertIn("EXPIRED", self.status(info(-2))[1])
         self.assertIn("unknown", self.status(info(None))[1])
+        for d in (5, -2):
+            out = self.status(info(d))[1]
+            self.assertIn("run `token set` again", out)
+            self.assertNotIn("--expires", out)
 
     def test_opt_in_keychain_item_is_explained(self):
         code, out, err = self.status(info(None, "keychain:figma-pat"))

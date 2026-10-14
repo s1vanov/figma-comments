@@ -37,7 +37,7 @@ Before the first `collect`, confirm the current directory with the designer: the
 The designer does this; you guide them.
 
 1. Figma → **Settings → Security → Personal access tokens → Generate new token**.
-2. Expiration: at most 90 days; non-expiring tokens no longer exist (Figma settings, checked 13 October 2026).
+2. Expiration: 1, 7, 30 or 90 days; non-expiring tokens no longer exist (Figma settings, checked 13 October 2026). Tell them to note the day and the expiration they pick.
 3. Scopes:
 
    | Scope | Why |
@@ -47,7 +47,7 @@ The designer does this; you guide them.
    | `file_content:read` | element names, and whether an element still exists |
    | `current_user:read` | know which comments are the designer's own (without it `GET /v1/me` returns 403, checked 12 October 2026) |
 
-4. In a terminal window of their own, outside the agent: `token set --expires YYYY-MM-DD` (hidden input; stored in the OS credential store; a mode-600 file only with `--allow-file`). It refuses input that is not a terminal, so it fails when you run it through your shell tool (and in Git Bash on Windows: tell them to use PowerShell or cmd.exe); do not run it for them or ask for the token in chat. The macOS Keychain is the only store used on a real machine so far. Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (CI), never on a real machine; if `token set` fails there, say so and let the designer set `FIGMA_TOKEN` (and `FIGMA_TOKEN_EXPIRES`) in their own shell instead.
+4. In a terminal window of their own, outside the agent: `token set`. It asks two questions, when they created the token in Figma (Enter = today, `unknown` if they don't know) and the expiration they chose in days (Enter = 90), prints the expiry date, then reads the token (hidden input; stored in the OS credential store; a mode-600 file only with `--allow-file`). `--created YYYY-MM-DD --days N`, or the exact `--expires YYYY-MM-DD`, answer the questions in advance. It refuses input that is not a terminal, so it fails when you run it through your shell tool (and in Git Bash on Windows: tell them to use PowerShell or cmd.exe); do not run it for them or ask for the token in chat. The macOS Keychain is the only store used on a real machine so far. Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (CI), never on a real machine; if `token set` fails there, say so and let the designer set `FIGMA_TOKEN` (and `FIGMA_TOKEN_EXPIRES`) in their own shell instead.
 5. `doctor <ref>`: verifies the token, its expiry, three of the four scopes (`file_comments:write` cannot be checked without posting; publish reports it if missing) and file access. It warns when 14 days or fewer remain and fails only when the token has expired; one action per problem; exit 0 = ready.
 
 The token never passes through you: not in chat, a command line, `curl`, a file, or `echo`/`env` output. Never call the Figma API yourself.
@@ -117,7 +117,7 @@ A posted reply cannot be edited, only deleted. `retract <ref> <comment_id>` dele
 
 | Command | Does | Writes to Figma |
 |---|---|---|
-| `token set [--expires YYYY-MM-DD] [--allow-file]` / `token status` / `token clear` | store / show source and days left / remove | no |
+| `token set [--created YYYY-MM-DD] [--days N] [--expires YYYY-MM-DD] [--allow-file]` / `token status` / `token clear` | ask creation date and days, store / show source and days left / remove | no |
 | `doctor [<ref>]` | check token, expiry, 3 of 4 scopes, access | no |
 | `collect <ref>` | write the next `round-NN.md` | no |
 | `participants list <ref> [--all]` | who is client, who is team | no |

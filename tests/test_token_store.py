@@ -19,8 +19,8 @@ from fclib import token_store as ts  # noqa: E402
 SECRET = "figd_unit-test-secret_0123456789"
 SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "figma_comments.py")
 # the absolute path, quoted: the hint works from any folder, a path with spaces included
-CMD_UNIX = "python3 '%s' token set --expires YYYY-MM-DD" % SCRIPT
-CMD_WIN = 'py "%s" token set --expires YYYY-MM-DD' % SCRIPT
+CMD_UNIX = "python3 '%s' token set" % SCRIPT
+CMD_WIN = 'py "%s" token set' % SCRIPT
 
 
 def cp(returncode=0, stdout="", stderr=""):

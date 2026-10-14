@@ -8,7 +8,7 @@ Never diagnose by printing the token. `echo $FIGMA_TOKEN`, `env`, `env | grep FI
 
 ## Token missing
 
-Where the CLI looks, in order: the `FIGMA_TOKEN` environment variable (with optional `FIGMA_TOKEN_EXPIRES=YYYY-MM-DD`), then the OS credential store, then on macOS the Keychain item named by `FIGMA_TOKEN_KEYCHAIN_SERVICE` (only if set), then the opt-in file. Missing everywhere: the designer runs `token set --expires YYYY-MM-DD` in their own terminal (setup steps in SKILL.md, "Get a token"). The error message gives the full command with the absolute, quoted path of `scripts/figma_comments.py`, so it can be pasted from any folder.
+Where the CLI looks, in order: the `FIGMA_TOKEN` environment variable (with optional `FIGMA_TOKEN_EXPIRES=YYYY-MM-DD`), then the OS credential store, then on macOS the Keychain item named by `FIGMA_TOKEN_KEYCHAIN_SERVICE` (only if set), then the opt-in file. Missing everywhere: the designer runs `token set` in their own terminal (setup steps in SKILL.md, "Get a token"). The error message gives the full command with the absolute, quoted path of `scripts/figma_comments.py`, so it can be pasted from any folder.
 
 A set `FIGMA_TOKEN` wins over the stored token. If `token status` shows source `env` with an old token, the designer removes it from their shell profile.
 
@@ -22,7 +22,9 @@ The opt-in file `~/.config/figma-comments/token.json` is used only if it is a re
 
 ## Token expired or about to expire
 
-Figma tokens last at most 90 days (Figma settings, checked 13 October 2026). `doctor` and every command warn when 14 days or fewer are left; once it has expired, commands still run with a warning (Figma answers 403) and `doctor` fails. Fix: the designer generates a new token with the same four scopes and runs `token set --expires <new date>`.
+Figma tokens last at most 90 days (Figma settings, checked 13 October 2026). `doctor` and every command warn when 14 days or fewer are left; once it has expired, commands still run with a warning (Figma answers 403) and `doctor` fails. Fix: the designer generates a new token with the same four scopes and runs `token set` again, answering the two questions (the day they created it, the expiration they chose). A token stored with an unknown expiry gets no warning; running `token set` again with the creation date fixes that.
+
+`token set` refuses a creation date in the future and a token whose computed expiry has already passed ("that token has already expired (YYYY-MM-DD); create a new one"). The expiry is the creation date plus the chosen days, as Figma shows it; it is not measured to the hour, and the 14-day warning absorbs a one-day difference. If the designer knows the exact date Figma showed, `--expires YYYY-MM-DD` stores that instead.
 
 ## 403 Forbidden
 
@@ -51,7 +53,7 @@ Do not work around certificate errors with your own `curl -k` or by disabling ve
 
 ## Windows: `token set` refuses in Git Bash
 
-Git Bash (mintty) connects Python to a pipe, not a terminal, so `token set` refuses ("needs a terminal") even when the designer types in it. Run `token set` in PowerShell or cmd.exe instead (`py "<skill_dir>\scripts\figma_comments.py" token set --expires YYYY-MM-DD` works in both), or set `FIGMA_TOKEN` and `FIGMA_TOKEN_EXPIRES` in the designer's own shell.
+Git Bash (mintty) connects Python to a pipe, not a terminal, so `token set` refuses ("needs a terminal") even when the designer types in it. Run `token set` in PowerShell or cmd.exe instead (`py "<skill_dir>\scripts\figma_comments.py" token set` works in both), or set `FIGMA_TOKEN` and `FIGMA_TOKEN_EXPIRES` in the designer's own shell.
 
 ## Windows: `python3` not found or opens the Microsoft Store
 

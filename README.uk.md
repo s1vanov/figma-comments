@@ -110,7 +110,7 @@ git clone https://github.com/s1vanov/figma-comments.git "%USERPROFILE%\.claude\s
 Це робить дизайнер один раз, у браузері й у власному терміналі. Агент лише підказує.
 
 1. У Figma: **Settings → Security → Personal access tokens → Generate new token**.
-2. Термін дії: не більше 90 днів. Безстрокових токенів більше немає (налаштування Figma, перевірено 13 жовтня 2026 року).
+2. Термін дії: Figma пропонує 1, 7, 30 або 90 днів. Безстрокових токенів більше немає (налаштування Figma, перевірено 13 жовтня 2026 року). Запам'ятайте день створення токена й обраний термін: `token set` спитає про обидва.
 3. Права (scopes):
 
    | Право | Навіщо |
@@ -123,10 +123,10 @@ git clone https://github.com/s1vanov/figma-comments.git "%USERPROFILE%\.claude\s
 4. У власному вікні термінала, поза агентом (не через шел-інструмент агента):
 
    ```
-   python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py token set --expires 2027-01-10
+   python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py token set
    ```
 
-   У Windows, у PowerShell: `py "$env:USERPROFILE\.claude\skills\figma-comments\scripts\figma_comments.py" token set --expires 2027-01-10`; у cmd.exe: `py "%USERPROFILE%\.claude\skills\figma-comments\scripts\figma_comments.py" token set --expires 2027-01-10`. Git Bash (mintty) не дає Python термінала, тому `token set` там відмовляє; скористайтеся PowerShell чи cmd.exe або задайте `FIGMA_TOKEN`. Вкажіть дату згасання, яку показала Figma. Токен вводиться приховано і зберігається у macOS Keychain, Windows Credential Manager або Linux Secret Service. `token set` відмовляється працювати, якщо вхід — не термінал, тож агент не може передати токен через конвеєр. На справжній машині використовувався лише macOS Keychain; Windows Credential Manager і Linux `secret-tool` досі перевірено лише автоматичними тестами (див. [Обмеження](#обмеження)).
+   У Windows, у PowerShell: `py "$env:USERPROFILE\.claude\skills\figma-comments\scripts\figma_comments.py" token set`; у cmd.exe: `py "%USERPROFILE%\.claude\skills\figma-comments\scripts\figma_comments.py" token set`. Git Bash (mintty) не дає Python термінала, тому `token set` там відмовляє; скористайтеся PowerShell чи cmd.exe або задайте `FIGMA_TOKEN`. Перед токеном `token set` ставить два запитання: коли ви створили токен у Figma (Enter — сьогодні, `unknown` — якщо не знаєте) і який термін обрали, у днях (Enter — 90). Команда друкує дату згасання: день створення плюс ці дні. Щоб обійтися без запитань, передайте `--created YYYY-MM-DD` і `--days N` або точну дату як `--expires YYYY-MM-DD`. Токен вводиться приховано і зберігається у macOS Keychain, Windows Credential Manager або Linux Secret Service. `token set` відмовляється працювати, якщо вхід — не термінал, тож агент не може передати токен через конвеєр. На справжній машині використовувався лише macOS Keychain; Windows Credential Manager і Linux `secret-tool` досі перевірено лише автоматичними тестами (див. [Обмеження](#обмеження)).
 
 5. Перевірити все:
 
@@ -186,7 +186,7 @@ fc publish .figma-comments/<file_key>/round-02.md --confirm 3f9a1c07be
 | `publish <round-file> --confirm <code>` | Публікує план, якщо файл байт у байт той, з якого обчислено код, і збережений підсумок не змінився (код охоплює обидва), і лише записи, які перелічив збережений підсумок (решту пропускає як «not in the confirmed summary»); без збереженого підсумку завершується з кодом 2. Тримає блокування робочої теки. Перед кожним записом знову читає гілку; зупиняється на першій помилці API; записує кожну публікацію спершу в `state.json`, потім у файл раунду одразу після неї, тож повторний запуск продовжує без дублів. | так |
 | `retract <ref> <comment_id>` | Показує одну з ваших відповідей і код; нічого не видаляє. Відмовляє для кореневих і чужих коментарів. | ні |
 | `retract <ref> <comment_id> --confirm <code>` | Видаляє цю відповідь. Код прив'язаний до id коментаря і його поточного тексту. Тримає блокування робочої теки. Позначка у файлі раунду лишається. Команда каже, що далі буде з гілкою: нова гілка чи гілка з відповіддю клієнта повернеться на наступному `collect` для виправленої відповіді; якщо на ній лишився ваш ✅, вона значиться готовою до закриття, доки ви не знімете ✅ у Figma; внутрішня, очікувальна чи закрита гілка блоку не отримує. | так |
-| `token set [--expires YYYY-MM-DD] [--allow-file]` | Читає токен прихованим введенням і зберігає. `--allow-file` дозволяє файл з правами 600 там, де системного сховища немає (не у Windows). Потребує термінала; відмовляє для введення через конвеєр і для запасного варіанта з відображенням символів; Ctrl-C завершує з «cancelled; nothing was stored». | ні |
+| `token set [--created YYYY-MM-DD] [--days N] [--expires YYYY-MM-DD] [--allow-file]` | Питає, коли токен створено і на скільки днів (якщо не задано `--created`/`--days` або точну дату `--expires`; `--expires` не поєднується з двома іншими), друкує дату згасання, потім читає токен прихованим введенням і зберігає. Відмовляє, якщо дата створення в майбутньому або токен уже згас. `--allow-file` дозволяє файл з правами 600 там, де системного сховища немає (не у Windows). Потребує термінала; відмовляє для введення через конвеєр і для запасного варіанта з відображенням символів; Ctrl-C завершує з «cancelled; nothing was stored». | ні |
 | `token status` | Звідки береться токен і скільки днів лишилося. Сам токен не друкує ніколи. | ні |
 | `token clear` | Прибирає збережений цим інструментом токен (запис у сховищі й файл) і каже, чи знаходиться ще якийсь токен. | ні |
 | `doctor [<ref>]` | Перевіряє токен, термін, акаунт, а з посиланням — доступ до коментарів і доступ за посиланням; три з чотирьох прав перевіряються. Код 1 при будь-якому провалі. | ні |

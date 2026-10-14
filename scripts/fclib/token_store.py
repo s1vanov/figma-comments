@@ -40,7 +40,7 @@ KEYCHAIN_SERVICE_ENV = "FIGMA_TOKEN_KEYCHAIN_SERVICE"
 
 _TIMEOUT = 60  # seconds for helper processes (security, secret-tool)
 
-_SETUP_ARGS = "token set --expires YYYY-MM-DD"
+_SETUP_ARGS = "token set"
 
 
 @dataclass(frozen=True)

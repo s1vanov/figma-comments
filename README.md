@@ -110,7 +110,7 @@ We have not verified where any other agent looks for skill folders, so we give n
 The designer does this once, in a browser and in their own terminal. The agent only guides.
 
 1. In Figma: **Settings → Security → Personal access tokens → Generate new token**.
-2. Expiration: at most 90 days. Non-expiring tokens no longer exist (Figma settings, checked 13 October 2026).
+2. Expiration: Figma offers 1, 7, 30 or 90 days. Non-expiring tokens no longer exist (Figma settings, checked 13 October 2026). Note the day you create the token and the expiration you choose: `token set` asks for both.
 3. Scopes:
 
    | Scope | Why |
@@ -123,10 +123,10 @@ The designer does this once, in a browser and in their own terminal. The agent o
 4. In a terminal window of your own, outside the agent (not through the agent's shell tool):
 
    ```
-   python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py token set --expires 2027-01-10
+   python3 ~/.claude/skills/figma-comments/scripts/figma_comments.py token set
    ```
 
-   On Windows, in PowerShell: `py "$env:USERPROFILE\.claude\skills\figma-comments\scripts\figma_comments.py" token set --expires 2027-01-10`; in cmd.exe: `py "%USERPROFILE%\.claude\skills\figma-comments\scripts\figma_comments.py" token set --expires 2027-01-10`. Git Bash (mintty) does not give Python a terminal, so `token set` refuses there; use PowerShell or cmd.exe, or set `FIGMA_TOKEN` instead. Use the expiry date Figma showed you. The token is read with hidden input and stored in the macOS Keychain, Windows Credential Manager or the Linux Secret Service. `token set` refuses to run when its input is not a terminal, so an agent cannot pipe a token into it. Only the macOS Keychain has been used on a real machine; Windows Credential Manager and Linux `secret-tool` have so far been exercised only by automated tests (see [Limits](#limits)).
+   On Windows, in PowerShell: `py "$env:USERPROFILE\.claude\skills\figma-comments\scripts\figma_comments.py" token set`; in cmd.exe: `py "%USERPROFILE%\.claude\skills\figma-comments\scripts\figma_comments.py" token set`. Git Bash (mintty) does not give Python a terminal, so `token set` refuses there; use PowerShell or cmd.exe, or set `FIGMA_TOKEN` instead. `token set` asks two questions before the token: when you created it in Figma (Enter = today, `unknown` if you don't know) and the expiration you chose, in days (Enter = 90). It prints the resulting expiry date, which is the creation date plus those days. To answer without the questions, pass `--created YYYY-MM-DD` and `--days N`, or the exact date as `--expires YYYY-MM-DD`. The token is read with hidden input and stored in the macOS Keychain, Windows Credential Manager or the Linux Secret Service. `token set` refuses to run when its input is not a terminal, so an agent cannot pipe a token into it. Only the macOS Keychain has been used on a real machine; Windows Credential Manager and Linux `secret-tool` have so far been exercised only by automated tests (see [Limits](#limits)).
 
 5. Check everything:
 
@@ -186,7 +186,7 @@ The round file format is described in [references/round-file.md](references/roun
 | `publish <round-file> --confirm <code>` | Posts the plan if the file is byte-for-byte the one the code was computed from and the saved summary is unchanged (the code covers both), and only the writes the saved summary listed (anything else is skipped as "not in the confirmed summary"); with no saved summary it exits with 2. Holds the workspace lock. Re-reads the thread before every write; stops at the first API error; records each write in `state.json` and then in the round file right after it lands, so a second run resumes without posting twice. | yes |
 | `retract <ref> <comment_id>` | Shows one of your own replies and a code; deletes nothing. Refuses root comments and other people's comments. | no |
 | `retract <ref> <comment_id> --confirm <code>` | Deletes that reply. The code is bound to the comment id and its current text. Holds the workspace lock. The round file's marker stays. It says what happens to the thread next: a new or client-replied thread comes back at the next `collect` for the corrected reply; with your ✅ still on it, it is listed as ready to close until you remove the ✅ in Figma; an internal, waiting or resolved thread gets no block. | yes |
-| `token set [--expires YYYY-MM-DD] [--allow-file]` | Reads the token with hidden input and stores it. `--allow-file` allows a mode-600 file where no credential store exists (not on Windows). Needs a terminal; refuses a piped input and an echoing fallback; Ctrl-C ends with "cancelled; nothing was stored". | no |
+| `token set [--created YYYY-MM-DD] [--days N] [--expires YYYY-MM-DD] [--allow-file]` | Asks when the token was created and for how many days (unless `--created`/`--days` or the exact `--expires` date are given; `--expires` cannot be combined with the other two), prints the expiry date, then reads the token with hidden input and stores it. Refuses a creation date in the future and a token that has already expired. `--allow-file` allows a mode-600 file where no credential store exists (not on Windows). Needs a terminal; refuses a piped input and an echoing fallback; Ctrl-C ends with "cancelled; nothing was stored". | no |
 | `token status` | Where the token comes from and how many days are left. Never prints the token. | no |
 | `token clear` | Removes this tool's stored token (credential store entry and token file) and says whether another token is still found. | no |
 | `doctor [<ref>]` | Checks token, expiry, account and, with a link, comment access and link sharing; three of the four scopes are exercised. Exit 1 on any failure. | no |
