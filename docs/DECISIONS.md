@@ -14,6 +14,7 @@
 - **Технічно:** Python 3.9+ лише зі стандартною бібліотекою; `urllib` з переходом на `curl` при помилці сертифіката; токен у системному сховищі (Keychain, Credential Manager, Secret Service); дані — в `.figma-comments/` проєкту під `.gitignore`.
 - Після аудиту безпеки (R32–R39) додано: повний текст кожної відповіді в підсумку, відмову для невидимих символів, код підтвердження над файлом і планом, робочу теку лише всередині проєкту (без символічних посилань), порівняння «після збору» за id повідомлень, жорсткіші виклики `curl` і ліміт очікування 429 на запуск, перевірки файлу токена. Застереження про Keychain записано як непідтверджене. Причини R32–R39 відновлено з коду й комітів постфактум.
 - Після рев'ю всієї гілки (R40–R47): публікується лише найновіший раунд, а `collect` записує вже наявну у Figma відповідь замість перенесення чернетки (жодної другої відповіді); UTF-8 для конвеєрів; селектори варіантів; чесне повідомлення `retract`; запис Keychain `figma-pat` читається лише за згодою (`FIGMA_TOKEN_KEYCHAIN_SERVICE`); повернення пропущеної гілки за id; помилка на зіпсованих даних коментаря.
+- Після злиття в `main` (R48–R50): перевірка невидимих символів іде і до, і після зняття розмітки; `token set` питає дату створення токена і термін у днях замість вгадувати дату завершення; CodeQL запускається лише тоді, коли репозиторій публічний.
 - Чотири рішення, ухвалені після рев'ю `publish` (R20–R23), тепер реалізовані: файл блокування `.publish.lock` проти двох одночасних записів, збережений підсумок `.plans/<код>.json`, через який підтверджений запуск виконує лише показані записи, правило «є текст» для відповіді і поведінка `retract` щодо стану. Код гарантує, що опубліковано саме те, що перелічив підсумок; що людина сказала «так», він не гарантує.
 
 Кожен запис нижче має поле **Why**; рішення з реалізації мають ще **Cost if wrong**.
@@ -22,7 +23,7 @@
 
 - **D-numbers** come from the design, stages 1 to 3, approved by the user on 13 October 2026. Where the design marks a choice as the author's own rather than discussed with the user, the entry says so.
 - **R-numbers** are rulings made while the plan was executed (13 and 14 October 2026), each with its reason and the cost if it turns out wrong.
-- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed. R32 to R39 record the security fix wave after the audit (commits `778b584` to `9ff277a`, 14 October 2026); their reasons were reconstructed from the code and commits. R40 to R47 record the final fix wave after the whole-branch review.
+- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed. R32 to R39 record the security fix wave after the audit (commits `778b584` to `9ff277a`, 14 October 2026); their reasons were reconstructed from the code and commits. R40 to R47 record the final fix wave after the whole-branch review. R48 to R50 were decided on 14 October 2026, after the merge into `main` and the first GitHub runs.
 
 ## Scope and boundary
 
@@ -273,6 +274,19 @@ Why: such a comment ended in an unexpected `KeyError`. Cost if wrong: one malfor
 
 **R47. The no-token message gives the absolute, quoted path of `scripts/figma_comments.py`; the node fixtures hold fabricated `version` and `lastModified`.**
 Why: a relative path works only from the skill folder; fixtures must hold no real values. Cost if wrong: none known.
+
+### After the merge into `main` (implemented)
+
+Rulings from 14 October 2026, after the branch was merged and pushed and the GitHub checks ran for the first time.
+
+**R48. Every Cc character except tab and newline and every Cf character except ZWJ and ZWNJ is refused in a reply, and the check runs on the reply as written and again after markup is removed (commit `ee14980`).**
+Why: the audit's residual finding I-3: the check ran only before markup was stripped, so removing `_` or `**` could leave a variation selector after a space, and SECURITY.md promised more than the code did. Cost if wrong: a reply with a legitimate format character is refused and must be retyped.
+
+**R49. `token set` asks when the token was created (Enter = today, `unknown` allowed) and its expiration in days (Enter = 90), and prints the creation date plus those days; `--created` and `--days`, or the exact `--expires`, answer in advance (commit `928420a`).**
+Why: Figma does not return a token's expiry through the API, and each user creates and stores their own token; a default of "today plus 90" is wrong for every token created earlier. People remember when they created a token and the lifetime they picked, not the end date. Cost if wrong: a wrong answer gives a wrong expiry warning; `token set` is run again.
+
+**R50. The CodeQL workflow runs only when the repository is public (`if: ${{ !github.event.repository.private }}`, with `actions: read`); the repository was created private at the author's request (commits `18fb004`, `a4069bf`).**
+Why: code scanning is not enabled for this private repository, so the job failed on every push with "Code scanning is not enabled", a red check that measured nothing. Cost if wrong: no CodeQL results while private; the job starts by itself once the repository is made public.
 
 ### Process
 
