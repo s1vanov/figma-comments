@@ -1216,6 +1216,30 @@ class RetractTests(PublishBase):
         self.assertIn("Your \u2705 is still on this thread, so collect will list it as ready to close", out)
         self.assertNotIn("comes back", out)
 
+    def test_retract_dry_run_says_what_happens_to_the_thread(self):
+        code, out, err = self.run_cli("retract", KEY, "4200102")
+        self.assertEqual(code, 0, err)
+        self.assertIn("After the delete: Thread 4200101 is resolved in Figma and stays resolved (deleting a reply "
+                      "does not reopen it, checked 14 October 2026), so collect puts no block for it in a round.",
+                      out.splitlines())
+        self.assertEqual(self.writes(), [])
+        code, out, err = self.run_cli("retract", KEY, "4200105")
+        self.assertEqual(code, 0, err)
+        self.assertIn("After the delete: Run collect: the thread comes back and you write the corrected reply there.",
+                      out.splitlines())
+        self.assertEqual(self.writes(), [])
+
+    def test_retract_dry_run_explains_emoji_codes(self):
+        note = "  (codes like :name: are how Figma stores emoji; Figma shows them as emoji)"
+        self.add_reply("4200107", OWNER, cid="4300001", text="\u0414\u044f\u043a\u0443\u044e :slightly_smiling_face:")
+        self.add_reply("4200107", OWNER, cid="4300002", created="2026-10-13T10:31:00.000Z",
+                       text="Call at 10:30:00 tomorrow")
+        _, out, _ = self.run_cli("retract", KEY, "4300001")
+        self.assertIn(note, out.splitlines())
+        _, out, _ = self.run_cli("retract", KEY, "4300002")
+        self.assertNotIn(note, out.splitlines())
+        self.assertEqual(self.writes(), [])
+
     def test_retract_code_binds_id_and_text(self):
         self.assertEqual(retract_code("5", "hi"), hashlib.sha256(b"5\nhi").hexdigest()[:10])
         self.assertNotEqual(retract_code("5", "hi"), retract_code("5", "hi!"))

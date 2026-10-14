@@ -15,7 +15,7 @@ from tests.helpers import KEY, all_new, big_comments, big_nodes, make_replay, pu
 from fclib import cli
 from fclib.participants import load_participants
 from fclib.roundfile import parse_round
-from fclib.state import load_state
+from fclib.state import State, ThreadState, load_state, save_state
 from fclib.token_store import TokenMissing
 from fclib.urls import comment_link
 
@@ -250,6 +250,27 @@ class ReplayBannerTests(CliBase):
         self.assertTrue(err.startswith("WARNING: FIGMA_COMMENTS_REPLAY is set"))
 
 
+class EmptyCollectOutputTests(CliBase):
+    def test_collect_with_nothing_for_a_round_says_so_and_writes_nothing(self):
+        code, out, err = self.run_cli("collect", KEY)
+        self.assertEqual(code, 0, err)
+        out = quiet(out)
+        self.assertIn("Nothing to put in a round: no round file written (no round file yet).", out.splitlines())
+        self.assertNotIn("collected:", out)
+        self.assertIn("Unknown authors", out)
+        self.assertFalse(self.ws.exists())
+
+    def test_an_empty_collect_names_the_latest_round_file(self):
+        put_participants(self.cwd)
+        self.run_cli("collect", KEY)
+        (self.ws / "participants.json").write_text("{}", encoding="utf-8")
+        code, out, err = self.run_cli("collect", KEY)
+        self.assertEqual(code, 0, err)
+        self.assertIn("Nothing to put in a round: no round file written (the latest is round-01.md).",
+                      quiet(out).splitlines())
+        self.assertFalse((self.ws / "round-02.md").exists())
+
+
 class CarryOutputTests(CliBase):
     def test_collect_reports_carried_and_resolved_held(self):
         put_participants(self.cwd)
@@ -444,6 +465,24 @@ class ThreadLookupTests(CliBase):
             _, out, _ = self.thread(comment_id)
             self.assertIn("Group: %s" % group, out, comment_id)
             self.assertIn(why, out, comment_id)
+
+    def test_a_resolved_thread_with_work_left_says_what_returns_if_reopened(self):
+        ws = put_participants(self.cwd)
+        cases = (
+            (ThreadState(kind="unclear", action="reply+react", reacted=True), "a reply still to write"),
+            (ThreadState(kind="edit", action="hold", draft="Draft"), "its held draft"),
+            (ThreadState(kind="edit", action="reply", draft="Draft"), "its saved draft"),
+            (ThreadState(kind="edit", action="reply+react", published_reply="9", reacted=False),
+             "the \u2705 still to add"),
+        )
+        for ts, what in cases:
+            with self.subTest(what=what):
+                save_state(ws, State(rounds=[{"n": 1, "collected_at": "2026-10-13T09:00:00Z"}],
+                                     threads={"4200101": ts}))
+                _, out, _ = self.thread("4200101")
+                self.assertIn("resolved in Figma, so no block; if it is reopened, collect brings it "
+                              "back with %s" % what, out)
+                self.assertNotIn("unfinished draft", out)
 
     def test_a_thread_that_collect_would_write_is_in_the_round(self):
         put_participants(self.cwd)

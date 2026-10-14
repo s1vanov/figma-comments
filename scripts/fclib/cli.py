@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import re
 import sys
 import warnings
 from datetime import date, datetime, timedelta, timezone
@@ -207,12 +208,20 @@ def _emit(lines: List[str]) -> None:
 def cmd_collect(args: argparse.Namespace) -> int:
     ref = parse_file_ref(args.ref)
     result: CollectResult = collect(_make_api(), ref, Path.cwd(), datetime.now(timezone.utc))
-    lines = [
-        "Round %02d collected: %s" % (result.n, _rel(result.round_path)),
-        "Threads: %d (%s)" % (result.threads, _counts_line(result.groups)),
-        "Blocks in the round: %d; carried from earlier rounds: %d; skipped by 'skip': %d"
-        % (result.blocks, result.carried, result.skipped),
-    ]
+    if result.round_path is None:
+        latest = "the latest is round-%02d.md" % result.n if result.n else "no round file yet"
+        lines = [
+            "Nothing to put in a round: no round file written (%s)." % latest,
+            "Threads: %d (%s)" % (result.threads, _counts_line(result.groups)),
+            "Skipped by 'skip': %d" % result.skipped,
+        ]
+    else:
+        lines = [
+            "Round %02d collected: %s" % (result.n, _rel(result.round_path)),
+            "Threads: %d (%s)" % (result.threads, _counts_line(result.groups)),
+            "Blocks in the round: %d; carried from earlier rounds: %d; skipped by 'skip': %d"
+            % (result.blocks, result.carried, result.skipped),
+        ]
     if result.carried:
         lines.append(
             "carried %d unpublished blocks from %s"
@@ -552,6 +561,12 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+# Figma stores an emoji as a shortcode (API-FACTS: the penguin emoji -> :penguin:, 13 October
+# 2026; the slightly smiling face -> :slightly_smiling_face:, live test 14 October 2026).
+# At least one letter, so "10:30:00" is not one.
+_EMOJI_CODE = re.compile(r":[a-z0-9_+-]*[a-z][a-z0-9_+-]*:")
+
+
 def _after_retract(report: Any) -> str:
     """What happens to the thread next; "comes back" only where collect really brings it back."""
     group = report.group_after
@@ -568,7 +583,8 @@ def _after_retract(report: Any) -> str:
     if group is Group.INTERNAL:
         return "Thread %s has no client message, so collect puts no block for it in a round." % root
     if group is Group.RESOLVED:
-        return "Thread %s is resolved in Figma, so collect puts no block for it in a round." % root
+        return ("Thread %s is resolved in Figma and stays resolved (deleting a reply does not reopen it, "
+                "checked 14 October 2026), so collect puts no block for it in a round." % root)
     if group is Group.UNKNOWN_AUTHOR:
         return ("Thread %s has an author who is in neither list; classify them with participants set, "
                 "then run collect." % root)
@@ -579,7 +595,11 @@ def cmd_retract(args: argparse.Namespace) -> int:
     ref = parse_file_ref(args.ref)
     workspace_path(Path.cwd(), ref.file_key)  # a symlinked or outside workspace is refused
     try:
-        ws = ensure_workspace(Path.cwd(), ref.file_key) if args.confirm is not None else None
+        if args.confirm is not None:
+            ws: Optional[Path] = ensure_workspace(Path.cwd(), ref.file_key)
+        else:  # the dry run reads participants.json when it exists, to say what happens next
+            existing = workspace_path(Path.cwd(), ref.file_key)
+            ws = existing if existing.is_dir() else None
         report = retract(_make_api(), ref.file_key, args.comment_id, confirm=args.confirm, ws=ws)
     except CodeMismatch as exc:
         print("error: %s" % _clean(exc), file=sys.stderr)
@@ -591,9 +611,12 @@ def cmd_retract(args: argparse.Namespace) -> int:
         _emit(["Reply %s deleted. %s" % (_clean(report.comment_id), _after_retract(report))])
         return 0
     quoted = ["  > " + _clean(line) for line in report.message.splitlines()] or ["  > (empty)"]
+    if _EMOJI_CODE.search(report.message):
+        quoted.append("  (codes like :name: are how Figma stores emoji; Figma shows them as emoji)")
     _emit(["Your reply %s will be deleted (this cannot be undone):" % _clean(report.comment_id)]
           + quoted
-          + ["confirm code: %s" % report.code,
+          + ["After the delete: %s" % _after_retract(report),
+             "confirm code: %s" % report.code,
              "Nothing was deleted. To delete it: %s retract %s %s --confirm %s"
              % (PROG, _clean(args.ref), _clean(report.comment_id), report.code)])
     return 0

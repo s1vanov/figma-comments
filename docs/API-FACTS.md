@@ -24,6 +24,8 @@ The test comments were deleted afterwards and the file was confirmed empty with 
 
 **Instrument D: documentation and settings pages,** read on the date given.
 
+**Instrument E: the live test, 14 October 2026.** This CLI against the sandbox file after three other Figma accounts had commented on it (one classified as client, two as team): `collect`, `publish --confirm` of one reply and one ✅ into the client's thread, a resolve in the interface by the token owner, `retract --confirm` of that reply. The posted text was compared with the approved one through the CLI's own read of `GET comments`; the designer checked the interface by screenshot. Evidence: a test log kept outside the repository (it names the testers).
+
 ## Reading comments
 
 | Fact | Date | Method |
@@ -47,6 +49,7 @@ The test comments were deleted afterwards and the file was confirmed empty with 
 | Markdown posted through the API is not rendered: `**bold**` shows with its asterisks (checked twice); a URL becomes clickable. | 13 Oct 2026 | A, B |
 | Typing Markdown character by character into the interface's comment field turns it into bold at once (Cmd+B also works); pasting the same text as a whole does not. | 13 Oct 2026 | B |
 | An emoji in the text is stored as a shortcode: 🐧 is saved as `:penguin:`, so the stored text differs from the sent text. The interface shows `:penguin:` as the emoji. This is why the code never compares texts to detect its own replies. | 13 Oct 2026 | A, B |
+| A reply into another account's thread: `parent_id` is that root and the interface shows it under the client's comment. 🙂 was stored as `:slightly_smiling_face:` and shown as the emoji; the rest of the text, an apostrophe included, came back identical. | 14 Oct 2026 | E |
 | `\n` is a line break in the interface. U+2028 is accepted and stored as is, but the interface shows it as a space. The code turns U+2028 and U+2029 into `\n` before posting. | 13 Oct 2026 | A, B |
 
 ## Reactions
@@ -59,6 +62,7 @@ The test comments were deleted afterwards and the file was confirmed empty with 
 | `DELETE …/reactions?emoji=:eyes:` returns 200 and removes that reaction. | 13 Oct 2026 | A |
 | A ✅ shows under the comment in the interface with a counter. | 13 Oct 2026 | B |
 | A reaction posted through the API on a resolved thread leaves it resolved. | 13 Oct 2026 | A, B |
+| A ✅ posted through the API on another account's root comment: 200, and it is listed in that root's `reactions` with the token owner as `user`. | 14 Oct 2026 | E |
 
 ## Resolving and reopening
 
@@ -72,6 +76,7 @@ The test comments were deleted afterwards and the file was confirmed empty with 
 | Fact | Date | Method |
 |---|---|---|
 | `DELETE /v1/files/:key/comments/:id` on your own root comment that has replies removes the whole thread, replies included. This is why `retract` refuses root comments. | 13 Oct 2026 | A, B |
+| `DELETE` of your own reply leaves the root (another account's) and its ✅ in place. In a resolved thread the thread stays resolved: deleting a reply does not reopen it, unlike posting one. | 14 Oct 2026 | E |
 
 ## Account, nodes and file metadata
 
@@ -111,10 +116,10 @@ Not measured, or measured only for a neighbouring case. The code's assumption is
 - **FigJam.** Every measurement was on a Figma Design file. Comments in FigJam boards may behave differently.
 - **Who can resolve.** Whether a client with view or comment access can resolve threads, and whether a resolve by the client shows up the same way in `resolved_at`, was not checked; only the token owner resolved, in the interface.
 - **Other `linkAccess` values.** Only `"view"` was observed. `doctor` assumes `"inherit"` and `"restricted"` mean "not open by link", `"edit"` means open to anyone, and `"org_view"` and `"org_edit"` mean open within the organization. Any other value is reported as unknown.
-- **Deleting a reply.** `retract` assumes that deleting a reply leaves the root and the other replies in place. A reply was deleted during cleanup, but the next read came only after the whole thread was gone, so this was not observed directly.
+- **Deleting a reply when other replies follow it.** On 14 October 2026 the root stayed after our only reply was deleted (instrument E); a thread with replies after ours was not tried.
 - **Branch files.** For a branch URL the code uses the branch key, on the assumption that comments on a branch are addressed through it. Not measured.
 - **Other plans and seats.** Only the Professional plan was used. Behaviour on Starter, Organization and Enterprise plans, and with a View or Collab seat, was not checked.
 - **429 handling.** `Retry-After` behaviour is taken from the documentation; no 429 was triggered.
 - **The response body of a reaction POST.** Not recorded in the shape captures; the code does not read it.
-- **A second account.** No comment by anyone other than the token owner was ever read live. The client and team logic is tested on fabricated fixtures built from the real field layout.
+- **A client replying again.** Comments by three other accounts were read live on 14 October 2026 (instrument E), but none of them replied after our answer, so the "client replied" group and a second round were not seen live; they are tested on fabricated fixtures.
 - **A comment edit endpoint.** Only inferred from the 404 on `PUT` and `PATCH`; the documentation was not searched separately for one.

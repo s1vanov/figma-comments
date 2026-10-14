@@ -1,7 +1,9 @@
 """`collect`: read the file's comments, classify the threads, write the next round file.
 
 Reads from Figma only. Writes `round-NN.md` and appends the round to `state.json`
-inside the workspace; it never writes to Figma (spec section 6). It holds the workspace
+inside the workspace; it never writes to Figma (spec section 6). With no block to write
+it writes no round file and appends no round (what the previous file said is still saved),
+so the latest round file stays the one to work in. It holds the workspace
 lock (lock.py) for the whole run, so it never overlaps a publish or retract, which also
 save state.json; a held lock refuses the collect. The very first collect, before the
 workspace exists, has nothing to lock against (no publish can run without a round file).
@@ -30,6 +32,7 @@ Which threads become blocks (spec 4.2 and 5.3):
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from collections import Counter
@@ -63,6 +66,7 @@ from .state import (
     round_published,
     round_seen,
     save_state,
+    state_payload,
 )
 from .urls import FileRef, comment_link
 
@@ -83,7 +87,7 @@ _BLOCK_LABELS = {Group.NEW: "new", Group.CLIENT_REPLIED: "client replied"}
 
 @dataclass
 class CollectResult:
-    round_path: Path
+    round_path: Optional[Path]  # None: nothing to put in a round, so no file was written
     groups: Dict[Group, int]
     unknown: List[AuthorSummary]
     carried: int
@@ -199,7 +203,8 @@ def round_verdict(thread: Thread, snap: Snapshot, ts: Optional[ThreadState],
     pending = _carry_state(ts)
     label = GROUP_LABELS[group]
     if group is Group.RESOLVED:
-        kept = "; its unfinished draft stays in state.json" if pending is not None else ""
+        kept = ("; if it is reopened, collect brings it back with %s" % _work_left(ts)
+                if ts is not None and pending is not None else "")
         return False, "resolved in Figma, so no block%s" % kept
     if group is Group.UNKNOWN_AUTHOR:
         return False, "unknown author %s" % ", ".join(unknown_in(thread, snap))
@@ -256,6 +261,15 @@ def _heading_author(thread: Thread, snap: Snapshot) -> Tuple[str, str]:
     if clients:
         return _handle(clients[-1], snap.people), "client"
     return _handle(thread.root, snap.people), "team"
+
+
+def _work_left(ts: ThreadState) -> str:
+    """The designer's unfinished work on a thread, in words (for a thread with a carry state)."""
+    if ts.action == "hold":
+        return "its held draft" if ts.draft.strip() else "its held block"
+    if ts.action in ("reply", "reply+react") and not ts.published_reply:
+        return "its saved draft" if ts.draft.strip() else "a reply still to write"
+    return "the \u2705 still to add"
 
 
 def _carry_state(ts: Optional[ThreadState]) -> Optional[Tuple[str, str]]:
@@ -480,6 +494,7 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
     key = ref.file_key
     ws = workspace_path(root, key)
     state = load_state(ws)  # a missing workspace gives an empty State; corrupt state stops here
+    before = json.dumps(state_payload(state), sort_keys=True)
     snap = fetch_snapshot(api, ref, ws)
 
     n = len(state.rounds) + 1
@@ -527,6 +542,19 @@ def _collect(api: FigmaAPI, ref: FileRef, root: Path, now: datetime) -> CollectR
         elif group in _BLOCK_LABELS:
             included.append((thread, _BLOCK_LABELS[group], "", ""))
     included.sort(key=lambda row: parse_ts(row[0].root["created_at"]))  # stable: ties keep API order
+
+    if not included:
+        # Nothing to answer or carry: no round file and no round entry, so round numbers stay
+        # meaningful and the latest file stays the one to publish. What the previous file said
+        # (a skip, a lost reply recorded above) is still saved.
+        if json.dumps(state_payload(state), sort_keys=True) != before:
+            save_state(ensure_workspace(root, key), state)
+        return CollectResult(
+            round_path=None, groups=snap.counts, unknown=snap.unknown_summary(), carried=0,
+            skipped=skipped, blocks=0, orphans=snap.orphans, n=len(state.rounds),
+            threads=len(snap.threads), held_resolved=held_resolved, carried_from=None,
+            invalid_ids=snap.invalid_ids, recorded=recorded,
+        )
 
     node_ids = [n for n in dict.fromkeys(node_of(row[0]) for row in included) if n]
     names = api.nodes(key, node_ids) if node_ids else {}

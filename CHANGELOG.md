@@ -54,12 +54,19 @@ From the whole-branch review (14 October 2026):
 - The no-token message prints the quoted absolute path of `scripts/figma_comments.py`.
 - The node fixtures no longer carry the sandbox file's real `version` and `lastModified`.
 
+From the live test with comments by three other Figma accounts (14 October 2026):
+
+- `collect` with nothing to put in a round (every author unknown, or every thread waiting, ready to close or resolved) writes no round file and adds no round to `state.json`; it prints "Nothing to put in a round: no round file written" with the latest round file, so round numbers no longer skip and the latest file stays the one to publish. What the previous round file said (a skip, a reply found already in Figma) is still saved.
+- The `retract` dry run says what happens to the thread after the delete (before, only the confirmed run did), and notes that `:name:` codes in the quoted reply are how Figma stores emoji.
+- For a resolved thread, `retract` says it stays resolved: deleting a reply does not reopen it (measured live).
+- `status --thread` on a resolved thread with work left says what comes back if it is reopened ("a reply still to write", "its saved draft", "its held draft", "the ✅ still to add") instead of "its unfinished draft stays in state.json".
+
 ### Known gaps
 
 - The confirmation code and the saved summary bind what is published, not that a person approved it: an agent that runs both steps itself passes the checks. That rests on the rule in `SKILL.md` and on the agent's permission prompt.
 - A lock left by a killed process (SIGKILL, power loss) has to be deleted by the designer by hand; on Windows there is no SIGTERM handler either.
-- `publish --confirm` into a client's thread has not run live: that needs a second Figma account. What ran live on 14 October 2026 against a sandbox file: `doctor`, `token status`, `collect`, `status` and one real `retract --confirm`.
-- Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (the CI matrix has not run yet), never on a real machine.
+- Ran live on 14 October 2026 against a sandbox file with comments by three other accounts: `doctor`, `token status`, `participants set`, `collect`, `status` and `status --thread`, `publish --confirm` of a reply into a client's thread and of a ✅ on it, and `retract --confirm` of that reply in a resolved thread. Not run live: a client replying in a second round, a conflict between two client people, a comment that tries to give instructions; whether the client gets a notification was not checked.
+- Windows Credential Manager and Linux `secret-tool` have been exercised only by automated tests (on Windows a real Credential Manager round trip on a GitHub CI runner, 14 October 2026), never on a user's machine.
 - Not verified: an audit finding that Keychain items created through `/usr/bin/security` may be readable by other processes of the same user without a prompt, so Keychain storage may protect about as much as a mode-600 file against code running as you.
 - Recognising our own ✅ after a lost answer compares timestamps (reactions have no id), so a clock that is minutes off can shift it; harmless, because Figma does not add the same reaction twice.
 - Characters that only look blank (U+3164, U+2800, the Mongolian free variation selectors U+180B to U+180D and the like) are not filtered; only Unicode Cc and Cf characters and variation selectors are handled.

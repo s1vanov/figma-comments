@@ -15,6 +15,7 @@
 - Після аудиту безпеки (R32–R39) додано: повний текст кожної відповіді в підсумку, відмову для невидимих символів, код підтвердження над файлом і планом, робочу теку лише всередині проєкту (без символічних посилань), порівняння «після збору» за id повідомлень, жорсткіші виклики `curl` і ліміт очікування 429 на запуск, перевірки файлу токена. Застереження про Keychain записано як непідтверджене. Причини R32–R39 відновлено з коду й комітів постфактум.
 - Після рев'ю всієї гілки (R40–R47): публікується лише найновіший раунд, а `collect` записує вже наявну у Figma відповідь замість перенесення чернетки (жодної другої відповіді); UTF-8 для конвеєрів; селектори варіантів; чесне повідомлення `retract`; запис Keychain `figma-pat` читається лише за згодою (`FIGMA_TOKEN_KEYCHAIN_SERVICE`); повернення пропущеної гілки за id; помилка на зіпсованих даних коментаря.
 - Після злиття в `main` (R48–R50): перевірка невидимих символів іде і до, і після зняття розмітки; `token set` питає дату створення токена і термін у днях замість вгадувати дату завершення; CodeQL запускається лише тоді, коли репозиторій публічний.
+- Після живого тесту з коментарями трьох інших акаунтів (R51–R54): `collect` без жодного блоку не пише файл раунду і не займає номер; підсумок `retract` ще до видалення каже, що буде з гілкою, і пояснює коди емодзі; видалення відповіді не відкриває закриту гілку (виміряно); `status --thread` для закритої гілки з незавершеною роботою каже, що повернеться, якщо її відкрити.
 - Чотири рішення, ухвалені після рев'ю `publish` (R20–R23), тепер реалізовані: файл блокування `.publish.lock` проти двох одночасних записів, збережений підсумок `.plans/<код>.json`, через який підтверджений запуск виконує лише показані записи, правило «є текст» для відповіді і поведінка `retract` щодо стану. Код гарантує, що опубліковано саме те, що перелічив підсумок; що людина сказала «так», він не гарантує.
 
 Кожен запис нижче має поле **Why**; рішення з реалізації мають ще **Cost if wrong**.
@@ -23,7 +24,7 @@
 
 - **D-numbers** come from the design, stages 1 to 3, approved by the user on 13 October 2026. Where the design marks a choice as the author's own rather than discussed with the user, the entry says so.
 - **R-numbers** are rulings made while the plan was executed (13 and 14 October 2026), each with its reason and the cost if it turns out wrong.
-- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed. R32 to R39 record the security fix wave after the audit (commits `778b584` to `9ff277a`, 14 October 2026); their reasons were reconstructed from the code and commits. R40 to R47 record the final fix wave after the whole-branch review. R48 to R50 were decided on 14 October 2026, after the merge into `main` and the first GitHub runs.
+- R20 to R23 were decided after a review of `publish`, at commit `1352f02`, and are implemented in the code as of 14 October 2026. R29 to R31 record the hardening pass that followed. R32 to R39 record the security fix wave after the audit (commits `778b584` to `9ff277a`, 14 October 2026); their reasons were reconstructed from the code and commits. R40 to R47 record the final fix wave after the whole-branch review. R48 to R50 were decided on 14 October 2026, after the merge into `main` and the first GitHub runs. R51 to R54 come from the live test the same day.
 
 ## Scope and boundary
 
@@ -317,3 +318,19 @@ Why: a failure in the state save alone used to record nothing, and a missing mar
 
 **R31. CLI polish from the review of the token commands: an expired token prints `warning: ...` (not `error:`) on stderr and the command goes on; `getpass`'s echo fallback is refused; Ctrl-C and end of input at a prompt end with "cancelled; nothing was stored"; a closed stdin is a refusal, not a crash; `SKILL.md` and the docs say that `doctor` exercises three of the four scopes and warns at 14 days or fewer; every file under `scripts/` is ASCII-only, enforced by `tests/test_source_ascii.py`.**
 Why: an expired token is a condition the user must see, not a reason to stop commands that do not need Figma. `file_comments:write` cannot be tested without posting a comment. Non-ASCII characters in source can hide direction changes or invisible characters from a reviewer.
+
+### After the live test (implemented)
+
+Rulings from the live test of 14 October 2026: the sandbox file with comments by three other Figma accounts, one reply and one ✅ published into the client's thread, the thread resolved by hand, the reply retracted. Each is implemented with a test.
+
+**R51. `collect` with no block to write writes no round file and appends no round to `state.json`; it prints "Nothing to put in a round: no round file written" and names the latest round file. The state is still saved when folding the previous round file changed it (a skip, a reply found already in Figma).**
+Why: the live test produced an empty round 01 (every author unknown before classification) and an empty round 03 (the only client thread resolved), so the first working round was numbered 02 and an empty file became "the latest". Keeping the previous file as the latest is safe: an empty collect means nothing is left to carry, and its blocks are published, skipped or resolved. Cost if wrong: a designer who wants a fresh file to look at gets none (`status` shows the same counts); the previous file stays publishable after an empty collect, where an empty newer file used to make `publish` refuse it, so a late publish of it relies on the per-write preflight (it skips resolved threads and threads someone answered meanwhile).
+
+**R52. The `retract` dry run says what will happen to the thread after the delete (the same wording the confirmed run uses), and when the quoted reply holds a `:name:` code it notes that this is how Figma stores emoji.**
+Why: the designer has to decide before the yes, not after the delete; and the summary showed `:slightly_smiling_face:` where the designer had approved 🙂. Cost if wrong: one more read of `participants.json` in the dry run; a reply that really contains text like `:note:` gets the emoji note.
+
+**R53. For a resolved thread `retract` says it stays resolved, with the date of the measurement.**
+Why: on 14 October 2026 a DELETE of our reply in a resolved thread left it resolved (`resolved_at` still set), the opposite of posting a reply; the rule on evidence asks for the measurement next to the claim. Cost if wrong: Figma changes this and the message is wrong until re-measured.
+
+**R54. `status --thread` on a resolved thread with work left names that work and says it comes back if the thread is reopened ("a reply still to write", "its saved draft", "its held draft", "the ✅ still to add").**
+Why: after a retract in a resolved thread it said "its unfinished draft stays in state.json" while there was no draft at all, only a cleared reply. Cost if wrong: none known; the wording follows `_carry_state`, the rule collect uses.

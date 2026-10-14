@@ -850,11 +850,11 @@ def _retract(api: FigmaAPI, file_key: str, comment_id: str, confirm: Optional[st
     message = str(target.get("message") or "")
     report = RetractReport(comment_id=comment_id, message=message, code=retract_code(comment_id, message),
                            root_id=root)
+    _thread_after(report, comments, owner_id, ws)  # the dry run says it too, before any yes
     if confirm is None:
         return report
     if not _code_matches(confirm, report.code):
         raise CodeMismatch("the comment changed or the code is wrong; run retract without --confirm again")
-    _thread_after(report, comments, owner_id, ws)
     api.delete(file_key, comment_id)
     report.deleted = True
     if ws is not None and (Path(ws) / "state.json").exists():

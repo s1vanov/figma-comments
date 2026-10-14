@@ -1,6 +1,6 @@
 # The round file (`round-NN.md`)
 
-`collect` writes `.figma-comments/<file_key>/round-NN.md`. It is Markdown the designer can edit in any editor. `publish` parses it and refuses the whole file if anything is ambiguous; it never skips a damaged block.
+`collect` writes `.figma-comments/<file_key>/round-NN.md` when at least one thread needs a block; otherwise it writes nothing and says so. It is Markdown the designer can edit in any editor. `publish` parses it and refuses the whole file if anything is ambiguous; it never skips a damaged block.
 
 ## Full example
 

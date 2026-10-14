@@ -145,15 +145,19 @@ def load_state(ws: Path) -> State:
     return _state_from_json(data, path)
 
 
-def save_state(ws: Path, state: State) -> None:
-    """Write ``state.json`` atomically: temp file in the same directory, then ``os.replace``."""
-    ws = Path(ws)
-    payload = {
+def state_payload(state: State) -> Dict[str, Any]:
+    """What ``state.json`` holds, as plain data: also lets a caller tell whether a state changed."""
+    return {
         "version": STATE_VERSION,
         "rounds": state.rounds,
         "threads": {rid: _thread_to_json(ts) for rid, ts in state.threads.items()},
     }
-    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"  # serialise before touching disk
+
+
+def save_state(ws: Path, state: State) -> None:
+    """Write ``state.json`` atomically: temp file in the same directory, then ``os.replace``."""
+    ws = Path(ws)
+    text = json.dumps(state_payload(state), indent=2, ensure_ascii=False) + "\n"  # serialise before touching disk
     fd, tmp = tempfile.mkstemp(prefix=STATE_FILE + ".", suffix=".tmp", dir=str(ws))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:

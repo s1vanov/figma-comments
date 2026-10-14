@@ -241,9 +241,10 @@ class CollectTests(CollectBase):
     def test_without_participants_file_everyone_is_unknown(self):
         (self.ws / "participants.json").unlink()
         result = self.run_collect()
-        _, blocks = self.blocks(result.round_path)
-        # the owner is team; nobody else is known, so no thread is client work
-        self.assertEqual(blocks, [])
+        # the owner is team; nobody else is known, so no thread is client work and no round is written
+        self.assertIsNone(result.round_path)
+        self.assertEqual(result.blocks, 0)
+        self.assertEqual(list(self.ws.glob("round-*.md")), [])
         self.assertTrue(result.unknown)
 
     def test_big_file_round_has_every_block(self):
@@ -499,6 +500,45 @@ class RoundFileCreationTests(CollectBase):
             result = self.run_collect()
         self.assertTrue(result.round_path.exists())
         self.assertEqual(list(self.ws.glob("*.tmp")), [])
+
+
+class EmptyRoundTests(CollectBase):
+    """A collect with nothing to put in a round writes no round file (live test, 14 October 2026)."""
+
+    def nobody_known(self):
+        (self.ws / "participants.json").write_text("{}", encoding="utf-8")
+
+    def test_no_known_client_writes_no_round_and_no_workspace(self):
+        root = self.tmp / "fresh"
+        root.mkdir()
+        api, _ = api_for(self.replay)
+        result = collect(api, REF, root, NOW)
+        self.assertIsNone(result.round_path)
+        self.assertEqual((result.n, result.blocks), (0, 0))
+        self.assertTrue(result.unknown)
+        self.assertFalse((root / ".figma-comments").exists())
+
+    def test_an_empty_collect_keeps_the_latest_round_and_its_number(self):
+        first = self.run_collect()
+        self.nobody_known()
+        result = self.run_collect(now=datetime(2026, 10, 14, 9, 0, 0, tzinfo=timezone.utc))
+        self.assertIsNone(result.round_path)
+        self.assertEqual(result.n, 1)
+        self.assertFalse((self.ws / "round-02.md").exists())
+        self.assertEqual([r["n"] for r in load_state(self.ws).rounds], [1])
+        put_participants(self.root)
+        third = self.run_collect(now=datetime(2026, 10, 14, 10, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(third.round_path.name, "round-02.md")
+        self.assertTrue(first.round_path.exists())
+
+    def test_an_empty_collect_still_saves_what_the_previous_file_says(self):
+        path = self.run_collect().round_path
+        path.write_text(edit_block(path.read_text(encoding="utf-8"), "4200109", "unclear", "skip"),
+                        encoding="utf-8")
+        self.nobody_known()
+        result = self.run_collect(now=datetime(2026, 10, 14, 9, 0, 0, tzinfo=timezone.utc))
+        self.assertIsNone(result.round_path)
+        self.assertEqual(load_state(self.ws).threads["4200109"].action, "skip")
 
 
 if __name__ == "__main__":
