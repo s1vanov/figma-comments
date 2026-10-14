@@ -33,6 +33,22 @@ jobs:
       # platform commands. The Windows Credential Manager round trip runs for real on windows-latest.
       - run: python -m unittest discover -s tests -v
 
+  coverage:
+    # On macOS, where the Keychain branches of token_store run. Windows- and Linux-only branches
+    # are not reached here and count as missed (total 92% on macOS, measured 14 October 2026).
+    # The README badge states this threshold, so it claims only what this job enforces.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install coverage==7.16.2
+      - run: coverage run --branch --source=scripts -m unittest discover -s tests
+      - run: coverage report --fail-under=90
+
   ruff:
     runs-on: ubuntu-latest
     steps:

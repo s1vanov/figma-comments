@@ -59,6 +59,7 @@ From the live test with comments by three other Figma accounts (14 October 2026)
 - `collect` with nothing to put in a round (every author unknown, or every thread waiting, ready to close or resolved) writes no round file and adds no round to `state.json`; it prints "Nothing to put in a round: no round file written" with the latest round file, so round numbers no longer skip and the latest file stays the one to publish. What the previous round file said (a skip, a reply found already in Figma) is still saved.
 - The `retract` dry run says what happens to the thread after the delete (before, only the confirmed run did), and notes that `:name:` codes in the quoted reply are how Figma stores emoji.
 - For a resolved thread, `retract` says it stays resolved: deleting a reply does not reopen it (measured live).
+- README badges: CI, Secret scan, coverage (a CI job on macOS fails below 90% branch coverage of `scripts/`), Python 3.9+, platforms, no dependencies, MIT. The CodeQL badge is left out until the repository is public, because the workflow is skipped while it is private.
 - `status --thread` on a resolved thread with work left says what comes back if it is reopened ("a reply still to write", "its saved draft", "its held draft", "the ✅ still to add") instead of "its unfinished draft stays in state.json".
 
 ### Known gaps
