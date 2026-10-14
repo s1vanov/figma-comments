@@ -68,7 +68,7 @@ def save_participants(path: str, people: Dict[str, Participant]) -> None:
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".participants-", suffix=".tmp", dir=directory)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.write("\n")
         os.replace(tmp, path)

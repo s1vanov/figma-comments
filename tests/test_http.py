@@ -264,8 +264,8 @@ class CurlTransportTests(unittest.TestCase):
                 with open(path[1:], "rb") as fh:
                     captured["body_content"] = fh.read()
             dpath = args[args.index("-D") + 1]
-            with open(dpath, "w") as fh:
-                fh.write(resp_headers)
+            with open(dpath, "wb") as fh:  # curl writes bytes; text mode would add \r on Windows
+                fh.write(resp_headers.encode("utf-8"))
             return subprocess.CompletedProcess(
                 args, 0, stdout=body + b"\n" + status.encode(), stderr=b""
             )

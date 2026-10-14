@@ -217,6 +217,7 @@ class LinuxTests(StoreTestCase):
             with self.assertRaises(ts.TokenMissing):
                 ts.set_token(SECRET, date(2026, 12, 1))
 
+    @unittest.skipIf(sys.platform == "win32", "the file fallback is POSIX-only; Windows has none")
     def test_linux_allow_file_falls_back_to_file(self):
         with mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool")):
             backend = ts.set_token(SECRET, date(2026, 12, 1), allow_file=True)
@@ -224,6 +225,7 @@ class LinuxTests(StoreTestCase):
         self.assertEqual(backend, "file")
         self.assertEqual(info, ts.TokenInfo(SECRET, date(2026, 12, 1), "file"))
 
+    @unittest.skipIf(sys.platform == "win32", "the file fallback is POSIX-only; Windows has none")
     def test_set_token_without_expiry_is_read_back_as_unknown(self):
         self.platform("linux")
         with mock.patch.object(ts.subprocess, "run", side_effect=FileNotFoundError("secret-tool")):

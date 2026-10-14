@@ -151,8 +151,10 @@ class CurlTransport:
                 status = int(code.strip())
             except ValueError:
                 raise TransportError("curl returned no HTTP status") from None
-            with open(hdr_path, "r", encoding="utf-8", errors="replace") as fh:
-                raw_headers = fh.read()
+            # Bytes, not text mode: on Windows text mode would translate line endings
+            # before _parse_header_block sees them.
+            with open(hdr_path, "rb") as fh:
+                raw_headers = fh.read().decode("utf-8", errors="replace")
             return Response(status, _parse_header_block(raw_headers), payload)
         finally:
             for p in (hdr_path, body_path):
