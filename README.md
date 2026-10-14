@@ -254,7 +254,7 @@ Each limit says how it was established. "Measured" means a throwaway script call
 0.1.0, unreleased, pre-1.0. What that means concretely, as of 14 October 2026:
 
 - The unit suite (`python3 -m unittest discover -s tests`) passes on macOS with Python 3.9 and 3.13; the Windows-only test and an opt-in live Keychain test are skipped there. The tests use no network. ruff, mypy, bandit and the documentation checks in `tools/` pass locally.
-- The CI workflows (the tests on macOS, Windows and Linux × Python 3.9 and 3.13; ruff, mypy and bandit; the documentation and skill checks; CodeQL; gitleaks) are written but have not run on GitHub yet, so the badges above show a result only after the first run; until then Windows and Linux are untested by us.
+- CI ran on GitHub on 14 October 2026 and passed: the unit suite on macOS, Windows and Linux × Python 3.9 and 3.13 (on Windows this includes a real Windows Credential Manager round trip), ruff, mypy, bandit, the documentation and skill checks, and gitleaks. CodeQL is skipped while the repository is private, because GitHub code scanning on a private repository needs GitHub Code Security; it runs once the repository is public.
 - The Figma API behaviour the code relies on was measured on 13 October 2026. On 14 October 2026 the CLI ran live against a sandbox file: `doctor`, `token status`, `collect` and `status`, and one real `retract --confirm` (a DELETE of our own reply). `publish --confirm` into a client's thread has not run live yet: that needs a second Figma account acting as the client.
 - One person, the author, uses it. Nobody else has installed it.
 - Figma can change its REST API at any time. Parsing is strict, so a change is more likely to stop a command than to post something wrong.

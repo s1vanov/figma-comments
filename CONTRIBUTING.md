@@ -58,7 +58,7 @@ python tools/validate_skill.py
 - `selftest_checks.py` introduces each of those drifts on purpose into a temporary copy and confirms that `check_docs.py` catches every one.
 - `validate_skill.py` checks the SKILL.md frontmatter (`name` equals the folder name, `description` starts with "Use when" and is at most 1024 characters), that SKILL.md is at most 250 lines, and that its internal links resolve.
 
-Run in GitHub only: CodeQL (Python) and gitleaks (secret scanning). The workflows (`.github/workflows/ci.yml`, `codeql.yml`, `secrets.yml`) use `permissions: contents: read` and pin every action to a full commit SHA; Dependabot updates the actions weekly.
+Run in GitHub only: CodeQL (Python; skipped while the repository is private, since code scanning there needs GitHub Code Security) and gitleaks (secret scanning). The workflows (`.github/workflows/ci.yml`, `codeql.yml`, `secrets.yml`) use `permissions: contents: read` and pin every action to a full commit SHA; Dependabot updates the actions weekly.
 
 CI installs ruff, mypy and bandit at exact versions (see `ci.yml`), so a new release of a tool cannot turn the build red by itself; bump the versions on purpose.
 

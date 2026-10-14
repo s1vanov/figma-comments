@@ -12,6 +12,9 @@ permissions:
 
 jobs:
   analyze:
+    # Code scanning needs GitHub Code Security on a private repository (checked 14 October 2026:
+    # "Code scanning is not enabled for this repository"). Runs once the repository is public.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     permissions:
       actions: read  # private repositories: CodeQL reads its own workflow run
