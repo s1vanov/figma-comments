@@ -65,7 +65,7 @@ From the live test with comments by three other Figma accounts (14 October 2026)
 Going public (19 October 2026):
 
 - The repository is public. Before that the history was rewritten to drop a local path from two early test-scenario commits, and the repository was created anew so the old commits cannot be fetched by id; every commit from 13 October on has a new id (the ids cited in `docs/DECISIONS.md` were updated). The "Similar projects" section was removed from the README.
-- Private vulnerability reporting, secret scanning and push protection are on; CodeQL runs.
+- Private vulnerability reporting, secret scanning and push protection are on. CodeQL ran on 19 October 2026 and passed; its five alerts were all in `tests/test_token_store.py` (a fabricated token written to a temporary folder to test the token file's permissions) and were dismissed as "used in tests". The CodeQL badge is back in the README.
 
 ### Known gaps
 
