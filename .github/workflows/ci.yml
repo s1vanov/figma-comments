@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - run: python -m pip install coverage==7.16.2
+      - run: python -m pip install --require-hashes -r .github/requirements/coverage.txt
       - run: coverage run --branch --source=scripts -m unittest discover -s tests
       - run: coverage report --fail-under=90
 
@@ -58,7 +58,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - run: python -m pip install ruff==0.17.0
+      - run: python -m pip install --require-hashes -r .github/requirements/ruff.txt
       - run: ruff check
 
   mypy:
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - run: python -m pip install mypy==2.4.0
+      - run: python -m pip install --require-hashes -r .github/requirements/mypy.txt
       - run: mypy scripts
 
   bandit:
@@ -82,7 +82,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - run: python -m pip install bandit==1.9.4
+      - run: python -m pip install --require-hashes -r .github/requirements/bandit.txt
       # -ll: medium severity and above, and nothing is skipped: at this level the scan reports no
       # issues. The low-severity findings it would show without -ll are expected: subprocess is
       # called with argument lists (never a shell), and the token never goes into argv.

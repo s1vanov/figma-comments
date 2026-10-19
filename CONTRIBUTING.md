@@ -62,7 +62,7 @@ Coverage: CI runs the suite under `coverage` (branch coverage of `scripts/`) on 
 
 Run in GitHub only: CodeQL (Python; on every push to `main`, weekly and by hand; it skips itself in a private copy, since code scanning there needs GitHub Code Security) gitleaks (secret scanning) and OpenSSF Scorecard (`scorecard.yml`, a rating of the repository's security practices, published for the README badge). The workflows (`.github/workflows/ci.yml`, `codeql.yml`, `secrets.yml`, `scorecard.yml`) use `permissions: contents: read` and pin every action to a full commit SHA; Dependabot updates the actions weekly.
 
-CI installs ruff, mypy, bandit and coverage at exact versions (see `ci.yml`), so a new release of a tool cannot turn the build red by itself; bump the versions on purpose.
+CI installs ruff, mypy, bandit and coverage from `.github/requirements/<tool>.txt`: an exact version with every dependency pinned by SHA-256 hash (`pip install --require-hashes`), so neither a new release nor a swapped package can change the build. The `.in` file names the version; to change it, edit the `.in` file and regenerate with `uv pip compile --universal --generate-hashes --python-version 3.13 --no-header .github/requirements/<tool>.in -o .github/requirements/<tool>.txt`. Dependabot proposes updates weekly.
 
 ## Optional local tests
 
