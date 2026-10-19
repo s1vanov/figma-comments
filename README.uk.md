@@ -25,6 +25,17 @@ Agent Skill, який збирає коментарі клієнта з Figma у
 
 ## Що робить
 
+```mermaid
+flowchart LR
+    A[Client comments<br>in Figma] -->|collect| B[Round file<br>round-NN.md]
+    B --> C[Agent sorts<br>and drafts replies]
+    C --> D[Designer<br>reviews]
+    D -->|publish| E[Summary<br>and code]
+    E -->|designer's yes| F[Replies in threads<br>and ✅ in Figma]
+    F --> G[Designer resolves<br>threads by hand]
+    G -.->|next round| A
+```
+
 Один раунд виглядає так:
 
 1. `collect` читає всі коментарі файлу, розкладає гілки на групи (нове, клієнт відповів, чекаємо клієнта, готово до закриття, закрито, внутрішнє, невідомий автор) і пише файл раунду в Markdown: по блоку на кожну гілку клієнта, що потребує уваги.
@@ -35,6 +46,18 @@ Agent Skill, який збирає коментарі клієнта з Figma у
 Скіл ніколи не править макет. Якщо коментар просить зміну, блок лишається в `hold`, доки дизайнер (або агент іншими інструментами, за вказівкою дизайнера) її не зробить; тоді йдуть відповідь «зроблено» і ✅.
 
 Незавершені блоки переходять у наступний раунд з видом і чернеткою, тож між раундами нічого не губиться.
+
+Які гілки отримують блок:
+
+```mermaid
+flowchart LR
+    T[Comment thread] --> R[In the round:<br>new or client replied]
+    T --> W[Waiting for the client:<br>the team wrote last]
+    T --> C[Ready to close:<br>our ✅ is newer]
+    T --> N[No block:<br>resolved, internal<br>or an unknown author]
+```
+
+Повний порядок правил, разом із пропущеними й перенесеними гілками, — у [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#thread-groups-modelclassify-first-rule-wins).
 
 ## Чим відрізняється
 

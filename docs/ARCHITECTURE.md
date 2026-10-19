@@ -78,6 +78,23 @@ The collection time is taken from the local clock before anything is read.
 
 ### Thread groups (`model.classify`, first rule wins)
 
+```mermaid
+flowchart TD
+    T[Comment thread] --> R1{Resolved in Figma?}
+    R1 -->|yes| X1[RESOLVED: no block]
+    R1 -->|no| R2{An author not in<br>participants.json?}
+    R2 -->|yes| X2[UNKNOWN_AUTHOR:<br>ask the designer who it is]
+    R2 -->|no| R3{Any client message?}
+    R3 -->|no| X3[INTERNAL: no block]
+    R3 -->|yes| R4{Team ✅ newer than<br>the last client message?}
+    R4 -->|yes| X4[READY_TO_CLOSE]
+    R4 -->|no| R5{Team wrote last?}
+    R5 -->|yes| X5[WAITING_CLIENT]
+    R5 -->|no| R6{Any team message?}
+    R6 -->|yes| X6[CLIENT_REPLIED: block]
+    R6 -->|no| X7[NEW: block]
+```
+
 1. root `resolved_at` set → `RESOLVED`
 2. an author who is neither the token owner nor in `participants.json` → `UNKNOWN_AUTHOR`
 3. no message from a client → `INTERNAL`

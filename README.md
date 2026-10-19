@@ -25,6 +25,17 @@ The moment this skill saves is the second review round: you need to know which c
 
 ## What it does
 
+```mermaid
+flowchart LR
+    A[Client comments<br>in Figma] -->|collect| B[Round file<br>round-NN.md]
+    B --> C[Agent sorts<br>and drafts replies]
+    C --> D[Designer<br>reviews]
+    D -->|publish| E[Summary<br>and code]
+    E -->|designer's yes| F[Replies in threads<br>and ✅ in Figma]
+    F --> G[Designer resolves<br>threads by hand]
+    G -.->|next round| A
+```
+
 One round looks like this:
 
 1. `collect` reads every comment of the file, groups the threads (new, client replied, waiting for the client, ready to close, resolved, internal, unknown author) and writes a Markdown round file, one block per client thread that needs attention.
@@ -35,6 +46,18 @@ One round looks like this:
 The skill never edits the design. If a comment asks for a change, the block stays on `hold` until the designer (or the agent with other tools, on the designer's instruction) has made it; then a "done" reply and a ✅ go out.
 
 Unfinished blocks carry over into the next round with their kind and draft, so nothing is lost between rounds.
+
+Which threads get a block:
+
+```mermaid
+flowchart LR
+    T[Comment thread] --> R[In the round:<br>new or client replied]
+    T --> W[Waiting for the client:<br>the team wrote last]
+    T --> C[Ready to close:<br>our ✅ is newer]
+    T --> N[No block:<br>resolved, internal<br>or an unknown author]
+```
+
+The full order of the rules, with skipped and carried threads, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#thread-groups-modelclassify-first-rule-wins).
 
 ## How it differs
 
