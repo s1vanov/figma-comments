@@ -1,0 +1,45 @@
+name: Bug report
+description: A command failed or did something it should not.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. Never paste a Figma token, a real file key or link, or the text of a client's comment. A fabricated example is enough.
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The command you ran, with the file key replaced by FILE_KEY.
+      placeholder: python3 scripts/figma_comments.py collect FILE_KEY
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: What happened
+      description: The output and the exit code. Remove names, comment text and anything else private.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: System
+      description: OS and version, Python version (`python3 --version`), and the agent you use.
+      placeholder: macOS 15, Python 3.12, Claude Code
+    validations:
+      required: true
+  - type: checkboxes
+    id: private
+    attributes:
+      label: Private data
+      options:
+        - label: I removed tokens, file keys, links and client comment text from this issue.
+          required: true

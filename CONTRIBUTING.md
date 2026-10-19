@@ -60,7 +60,7 @@ python tools/validate_skill.py
 
 Coverage: CI runs the suite under `coverage` (branch coverage of `scripts/`) on macOS and fails below 90%; the README badge states that threshold. Locally: `python3 -m pip install coverage==7.16.2`, then `coverage run --branch --source=scripts -m unittest discover -s tests` and `coverage report`.
 
-Run in GitHub only: CodeQL (Python; on every push to `main`, weekly and by hand; it skips itself in a private copy, since code scanning there needs GitHub Code Security) and gitleaks (secret scanning). The workflows (`.github/workflows/ci.yml`, `codeql.yml`, `secrets.yml`) use `permissions: contents: read` and pin every action to a full commit SHA; Dependabot updates the actions weekly.
+Run in GitHub only: CodeQL (Python; on every push to `main`, weekly and by hand; it skips itself in a private copy, since code scanning there needs GitHub Code Security) gitleaks (secret scanning) and OpenSSF Scorecard (`scorecard.yml`, a rating of the repository's security practices, published for the README badge). The workflows (`.github/workflows/ci.yml`, `codeql.yml`, `secrets.yml`, `scorecard.yml`) use `permissions: contents: read` and pin every action to a full commit SHA; Dependabot updates the actions weekly.
 
 CI installs ruff, mypy, bandit and coverage at exact versions (see `ci.yml`), so a new release of a tool cannot turn the build red by itself; bump the versions on purpose.
 

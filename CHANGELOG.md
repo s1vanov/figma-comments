@@ -66,6 +66,7 @@ Going public (19 October 2026):
 
 - The repository is public. Before that the history was rewritten to drop a local path from two early test-scenario commits, and the repository was created anew so the old commits cannot be fetched by id; every commit from 13 October on has a new id (the ids cited in `docs/DECISIONS.md` were updated). The "Similar projects" section was removed from the README.
 - Private vulnerability reporting, secret scanning and push protection are on. CodeQL ran on 19 October 2026 and passed; its five alerts were all in `tests/test_token_store.py` (a fabricated token written to a temporary folder to test the token file's permissions) and were dismissed as "used in tests". The CodeQL badge is back in the README.
+- Repository settings: a ruleset on `main` (no force push, no deletion, linear history), Dependabot alerts, topics. Issue forms for bugs and feedback warn against pasting tokens, file keys or client comment text; blank issues are off and security reports go to private vulnerability reporting. OpenSSF Scorecard runs on every push to `main` and weekly.
 
 ### Known gaps
 

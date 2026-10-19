@@ -1,0 +1,15 @@
+name: Feedback or idea
+description: Something that could work better, or a case the skill does not handle.
+labels: [feedback]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. Describe the case with made-up names and text, never a real client's comments or a token.
+  - type: textarea
+    id: case
+    attributes:
+      label: The case
+      description: What you were doing, what the skill did, and what would have helped.
+    validations:
+      required: true
