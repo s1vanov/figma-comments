@@ -61,31 +61,13 @@ The full order of the rules, with skipped and carried threads, is in [docs/ARCHI
 
 ## How it differs
 
-The obvious alternative is an MCP server that exposes "list comments" and "post reply" to the agent. Several exist (see below). This skill takes a different shape:
+The obvious alternative is an MCP server that exposes "list comments" and "post reply" to the agent. This skill takes a different shape:
 
 - **The designer approves a file, not a chat message.** Replies are drafted in a round file the designer can edit in any editor. The confirmation code is computed from the exact bytes of that file and the list of writes in the summary, so an edit to either after the summary invalidates the code, and the confirmed run posts only what the summary listed. The summary shows every reply in full. The code does not prove that a person said yes; see [SECURITY.md](SECURITY.md).
 - **Every write is checked against fresh data.** Before each reply the thread is read again: no reply into a resolved thread (an API reply reopens it), no reply when the client or a colleague wrote after the round was collected.
 - **Client and team are told apart.** A `participants.json` says who is the client and who is the team; comments from an unknown author are held back until the designer says who they are.
 - **Python 3.9+ standard library only**, one command for macOS, Windows and Linux; the token lives in the operating system's credential store, never on a command line.
 - **Comment text is treated as data.** The round file quotes every client line, and the parser refuses the whole file rather than skip a damaged block, so a comment that imitates the file's fields cannot forge a reply.
-
-### Similar projects
-
-Found on 13 October 2026 by searching GitHub, npm and the MCP registries and reading each project's README. Star counts and dates are from that day.
-
-| Project | What it does better |
-|---|---|
-| [processedfood/figma-comments-mcp](https://github.com/processedfood/figma-comments-mcp) | Filters for unresolved, mentions and recent comments; flags threads stale for more than 7 days. Node, `npx`. |
-| [ausarenglish/figflow](https://github.com/ausarenglish/figflow) | Watch mode, a context packet for the agent, and links a pull request back to the comment as a dev resource. Dry run unless `--post`; has its own `doctor`. Node 24+. |
-| [Mr-wang007s/figma-design-pilot-mcp](https://github.com/Mr-wang007s/figma-design-pilot-mcp) | Local database with a diff between syncs, an idempotent reply outbox, and three status emoji (👀 ✅ 🚫). Node. |
-| [RussGallaway/figma-comments-mcp](https://github.com/RussGallaway/figma-comments-mcp) | Filters and fetches single threads, posts new root comments, bulk delete (up to 100), accepts branch URLs. Node 22.19+. |
-| [junsimon/figma-comments-mcp](https://github.com/junsimon/figma-comments-mcp) | Maps comments to a layer path; writes need an explicit environment flag plus `dry_run: false`. Node 20+. |
-| [OJBoon/figwatch](https://github.com/OJBoon/figwatch) | Trigger words in comments (`@ux`, `@tone`) start automatic audits; macOS menu-bar app or Docker with webhooks. Python. |
-| [thirdstrandstudio/mcp-figma](https://github.com/thirdstrandstudio/mcp-figma) | The whole Figma REST API including webhooks, not only comments. Node, 76 stars. |
-| [southleft/figma-console-mcp](https://github.com/southleft/figma-console-mcp) | Comments as part of a large design-system toolkit (121 tools). Node, 2475 stars. |
-| Hypermatic Commentful (Figma plugin) | Works inside Figma: kanban board, statuses, CSV export. |
-
-What we did not find in those READMEs on 13 October 2026: setup instructions for Windows, token storage in the OS credential store, a warning before the token expires, or a separation between client and team comments. That is a statement about what the READMEs say, not about what the code can do.
 
 Figma's own MCP server has no comment tool (its tools page, read 13 October 2026).
 
