@@ -1,10 +1,10 @@
 # figma-comments
 
-[![CI](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml) [![CodeQL](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml) [![Secret scan](https://github.com/s1vanov/figma-comments/actions/workflows/secrets.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/secrets.yml) [![coverage ≥ 90%](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen)](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml) [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/) [![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#install) [![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)](#requirements) [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml) [![CodeQL](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/codeql.yml) [![Secret scan](https://github.com/s1vanov/figma-comments/actions/workflows/secrets.yml/badge.svg)](https://github.com/s1vanov/figma-comments/actions/workflows/secrets.yml) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/s1vanov/figma-comments/badge)](https://scorecard.dev/viewer/?uri=github.com/s1vanov/figma-comments) [![coverage ≥ 90%](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen)](https://github.com/s1vanov/figma-comments/actions/workflows/ci.yml) [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/) [![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#install) [![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)](#requirements) [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 An Agent Skill that collects a client's Figma comments into a file the designer and an AI agent work through together, then posts only the replies and ✅ reactions the designer approved, each into the right comment thread.
 
-Status: 0.1.0, not released yet. See [Status](#status) for what has and has not been tested.
+Status: 0.1.0, a pre-release (19 October 2026). See [Status](#status) for what has and has not been tested.
 
 [Українська версія](README.uk.md)
 
@@ -256,7 +256,7 @@ Each limit says how it was established. "Measured" means a throwaway script call
 
 ## Status
 
-0.1.0, unreleased, pre-1.0. What that means concretely, as of 14 October 2026:
+0.1.0, a pre-release, before 1.0. What that means concretely, as of 19 October 2026:
 
 - The unit suite (`python3 -m unittest discover -s tests`) passes on macOS with Python 3.9 and 3.13; the Windows-only test and an opt-in live Keychain test are skipped there. The tests use no network. ruff, mypy, bandit and the documentation checks in `tools/` pass locally.
 - CI ran on GitHub on 14 October 2026 and passed: the unit suite on macOS, Windows and Linux × Python 3.9 and 3.13 (on Windows this includes a real Windows Credential Manager round trip), ruff, mypy, bandit, the documentation and skill checks, and gitleaks. The repository has been public since 19 October 2026; CodeQL, skipped while it was private (code scanning on a private repository needs GitHub Code Security), runs from then on.

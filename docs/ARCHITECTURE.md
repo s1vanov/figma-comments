@@ -1,6 +1,6 @@
 # Architecture
 
-How figma-comments is put together, for contributors and for future maintenance sessions. Describes the code at 0.1.0 (unreleased).
+How figma-comments is put together, for contributors and for future maintenance sessions. Describes the code at 0.1.0 (pre-release, 19 October 2026).
 
 ## Shape
 
