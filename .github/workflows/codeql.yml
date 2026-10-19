@@ -6,6 +6,7 @@ on:
   pull_request:
   schedule:
     - cron: "23 4 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,7 +14,8 @@ permissions:
 jobs:
   analyze:
     # Code scanning needs GitHub Code Security on a private repository (checked 14 October 2026:
-    # "Code scanning is not enabled for this repository"). Runs once the repository is public.
+    # "Code scanning is not enabled for this repository"). The repository is public since
+    # 19 October 2026; the condition stays so a private fork or copy skips instead of failing.
     if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     permissions:

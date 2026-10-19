@@ -62,6 +62,11 @@ From the live test with comments by three other Figma accounts (14 October 2026)
 - README badges: CI, Secret scan, coverage (a CI job on macOS fails below 90% branch coverage of `scripts/`), Python 3.9+, platforms, no dependencies, MIT. The CodeQL badge is left out until the repository is public, because the workflow is skipped while it is private.
 - `status --thread` on a resolved thread with work left says what comes back if it is reopened ("a reply still to write", "its saved draft", "its held draft", "the ✅ still to add") instead of "its unfinished draft stays in state.json".
 
+Going public (19 October 2026):
+
+- The repository is public. Before that the history was rewritten to drop a local path from two early test-scenario commits, and the repository was created anew so the old commits cannot be fetched by id; every commit from 13 October on has a new id (the ids cited in `docs/DECISIONS.md` were updated). The "Similar projects" section was removed from the README.
+- Private vulnerability reporting, secret scanning and push protection are on; CodeQL runs.
+
 ### Known gaps
 
 - The confirmation code and the saved summary bind what is published, not that a person approved it: an agent that runs both steps itself passes the checks. That rests on the rule in `SKILL.md` and on the agent's permission prompt.
