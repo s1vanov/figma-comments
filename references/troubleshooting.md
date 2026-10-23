@@ -39,7 +39,15 @@ If a scope is missing, the designer creates a new token with all four scopes and
 
 Figma's comment endpoints are Tier 2: 25, 50 or 100 requests per minute depending on the plan, and 5 per minute for View and Collab seats (Figma documentation, read 13 October 2026). Successful responses carry no rate-limit headers, so there is no warning before a 429.
 
-The CLI waits for `Retry-After` itself and retries (up to 5 times). If Figma asks for more than 300 seconds at once, or the waits of one run add up to more than 600 seconds, it stops instead of blocking the shell, with "rate limited: Figma asks to wait N s; try again later" (or "rate limited for too long"). Tell the designer the wait, and re-run later. A publish stopped this way is safe to resume: blocks already posted carry the published marker, and threads with a team reply after collect are skipped. Resume the normal way: `publish <round-file>`, show the new summary, wait for yes, `--confirm` the new code.
+The CLI waits for `Retry-After` itself and retries (up to 5 times). If Figma asks for more than 300 seconds at once, or the waits of one run add up to more than 600 seconds, it stops instead of blocking the shell, with "rate limited: Figma asks to wait N s; try again later" (or "rate limited for too long"). Tell the designer the wait, and re-run later. A 429 was also seen in a different, hand-written run after about 37 replies posted in a row about 3 seconds apart (12 October 2026, see `docs/API-FACTS.md`, "Tokens and limits"): a large batch can hit the limit well inside the documented tier, so expect to resume. A publish stopped this way is safe to resume: blocks already posted carry the published marker, and threads with a team reply after collect are skipped. Resume the normal way: `publish <round-file>`, show the new summary, wait for yes, `--confirm` the new code.
+
+## A comment shows up under a different element than before
+
+Observed once (12 October 2026, `docs/API-FACTS.md`, "Observed outside the sandbox"): a comment posted on one element was later listed under the file's top-level group, and a check that matched by element did not find it. If a thread seems to be missing or duplicated between two `collect` runs, look it up by id with `status <ref> --thread <id>` before assuming it was deleted or posted twice; match by author and text, not by element name.
+
+## The comments the client mentions are not in the file you have
+
+A copy of a file does not carry the original's comments (observed 13 October 2026). If `collect` finds fewer threads than the designer or the client describes, ask whether the client works in the original, and run `collect` on the original's key too.
 
 ## Link sharing warning
 

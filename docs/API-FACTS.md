@@ -26,6 +26,8 @@ The test comments were deleted afterwards and the file was confirmed empty with 
 
 **Instrument E: the live test, 14 October 2026.** This CLI against the sandbox file after three other Figma accounts had commented on it (one classified as client, two as team): `collect`, `publish --confirm` of one reply and one ✅ into the client's thread, a resolve in the interface by the token owner, `retract --confirm` of that reply. The posted text was compared with the approved one through the CLI's own read of `GET comments`; the designer checked the interface by screenshot. Evidence: a test log kept outside the repository (it names the testers).
 
+**Instrument F: field observations, 12 to 13 October 2026.** A script written in an ordinary client-work session (not the sandbox, not this CLI), calling the same REST endpoints through `curl` to post about 60 replies to a client's review file and to read comments of an original file and of its copy. Evidence: the session's own notes and request log, kept outside the repository. These are single observations: the plan and seat of the account, and response headers, were not recorded. Where an instrument F row seems to disagree with an earlier row, both stay, each with its date.
+
 ## Reading comments
 
 | Fact | Date | Method |
@@ -98,6 +100,18 @@ The test comments were deleted afterwards and the file was confirmed empty with 
 | `GET /v1/files/:key/nodes` is Tier 1. The code makes one batched call per `collect` (up to 100 ids per call). | 13 Oct 2026 | D: same page |
 | Successful responses carry no rate-limit headers, only a request id (`x-figma-rest-api-request-id`), so there is no warning before a 429. | 13 Oct 2026 | A (headers logged for every response) |
 | A 429 response carries `Retry-After` in seconds. The code waits that long (30 s if the header is missing or negative), at most 5 times, and stops instead of waiting more than 300 s. | 13 Oct 2026 | D only; no 429 was observed |
+| **A 429 was observed on a run of POSTs to `/comments`:** about the 37th reply in a row, with roughly 3 s between requests. The run then waited and retried with a growing back-off (20 s times the attempt number). Whether the response carried `Retry-After` was not recorded, so the row above is still documentation only for that header. This does not contradict the row above, which is about the sandbox measurements (instrument A, no 429 there); it adds a case where one did occur. | 12 Oct 2026 | F |
+
+## Observed outside the sandbox
+
+Single observations from instrument F; the cause is not established for any of them.
+
+| Fact | Date | Method |
+|---|---|---|
+| **A copy of a file does not carry the original's comments.** A designer's working copy had none of the client's comments; reading both files showed the original held 9 more comment threads than the copy, so 9 requested changes had not been seen. | 13 Oct 2026 | F: `GET comments` on both file keys, compared |
+| A reply posted into a thread of the original file was accepted although the token owner had view-only access to it (8 replies, read back afterwards with `GET comments`). Reading the file structure through the Figma MCP server on the same file answered "no edit access". | 13 Oct 2026 | F |
+| **A comment was found attached to a different element than where it was posted:** after a run, one earlier comment, posted on a card, was listed under the file's top-level group, so a check that looked for it by element name did not find it. Why Figma moved it was not established. A check that matches by author and text finds it; a check by element does not. | 12 Oct 2026 | F |
+| `GET /v1/files/:key` returned 403 with a token that held only comment scopes (no `file_content:read`); the comment endpoints worked with the same token. | 13 Oct 2026 | F |
 
 ## Outside Figma
 
@@ -119,7 +133,7 @@ Not measured, or measured only for a neighbouring case. The code's assumption is
 - **Deleting a reply when other replies follow it.** On 14 October 2026 the root stayed after our only reply was deleted (instrument E); a thread with replies after ours was not tried.
 - **Branch files.** For a branch URL the code uses the branch key, on the assumption that comments on a branch are addressed through it. Not measured.
 - **Other plans and seats.** Only the Professional plan was used. Behaviour on Starter, Organization and Enterprise plans, and with a View or Collab seat, was not checked.
-- **429 handling.** `Retry-After` behaviour is taken from the documentation; no 429 was triggered.
+- **429 handling.** `Retry-After` behaviour is taken from the documentation; no 429 was triggered. (A 429 was seen by another instrument on 12 Oct 2026, see "Tokens and limits"; whether it carried `Retry-After` is still unknown.)
 - **The response body of a reaction POST.** Not recorded in the shape captures; the code does not read it.
 - **A client replying again.** Comments by three other accounts were read live on 14 October 2026 (instrument E), but none of them replied after our answer, so the "client replied" group and a second round were not seen live; they are tested on fabricated fixtures.
 - **A comment edit endpoint.** Only inferred from the 404 on `PUT` and `PATCH`; the documentation was not searched separately for one.
