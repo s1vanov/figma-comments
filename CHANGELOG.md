@@ -2,6 +2,17 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor version may change the round file format or the CLI.
 
+## [Unreleased]
+
+### Added
+
+- `ask <ref> <questions-file>`: new questions to the client as root comments pinned to elements. The questions file is a JSON array of `{"id", "node_id", "text", "offset": {"x", "y"}}` (`offset` optional). The dry run writes nothing to Figma: it refuses the whole file for a repeated id or field, an unknown field, an element that is not in the file (Figma would show the comment as "Unattached"), empty text, text over 2000 characters, more than 50 questions or a hidden character (the rule `publish` uses for replies), prints every comment in full under the `|` gutter and a confirmation code over the file's bytes and the saved plan (`.plans/ask-<code>.json`). `--confirm <code>` exits 2 when the file or the plan changed, posts only the questions the plan listed (`client_meta` with `node_id` and `node_offset`), checks the elements again under the workspace lock and records each question in `asked.json` before and after its request: a rerun never posts a question twice, and a question whose answer was lost is recorded instead of posted again. A posted id is never posted again, even with a new text.
+- The replay transport creates root comments for a body with `client_meta` and no `comment_id`.
+
+### Changed
+
+- The workspace lock refusal reads "another publish, ask, retract or collect seems to be running".
+
 ## [0.1.0] - 2026-10-19
 
 First version.

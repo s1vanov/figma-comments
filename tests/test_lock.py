@@ -32,7 +32,7 @@ class RefusalTextTests(LockBase):
         msg = str(ctx.exception)
         self.assertEqual(
             msg,
-            "another publish, retract or collect seems to be running "
+            "another publish, ask, retract or collect seems to be running "
             "(lock %s, pid 4242, since 2026-10-13T10:05:00Z). Ask the person running the tool "
             "whether a run is still going; do not delete the lock yourself." % self.path)
         self.assertNotIn("delete the lock file", msg)

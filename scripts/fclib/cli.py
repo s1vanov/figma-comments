@@ -1,10 +1,10 @@
-"""Command line: `collect`, `participants list|set`, `status`, `publish`, `retract`,
+"""Command line: `collect`, `participants list|set`, `status`, `publish`, `ask`, `retract`,
 `doctor`, `token set|status|clear`. `status --thread <comment_id>` finds the thread of any comment.
 
 Output is written for an agent that pays for every line it reads: each command prints a
 short summary, at most 10 items per list and a "...and N more" line (status and
 participants list take --all). Expected failures print `error: <text>` on stderr and exit
-with 1; usage errors exit with 2; nothing prints a traceback for them. `publish` and
+with 1; usage errors exit with 2; nothing prints a traceback for them. `publish`, `ask` and
 `retract` also exit with 2 when the confirm code does not match (nothing was written).
 
 Environment:
@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .api import FigmaAPI
+from .ask import AskEntry, AskReport, ask, link_of
 from .collect import (
     GROUP_LABELS,
     PARTICIPANTS_FILE,
@@ -561,6 +562,87 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _plural(n: int, one: str, many: str) -> str:
+    return "%d %s" % (n, one if n == 1 else many)
+
+
+def _ask_head(entry: AskEntry, number: Optional[int] = None) -> str:
+    q = entry.question
+    where = "%s (%s)" % (_capped(entry.node_name), q.node_id) if entry.node_name else q.node_id
+    return "  %s%s \u00b7 %s \u00b7 offset %s" % ("%d. " % number if number is not None else "", q.qid, where,
+                                                  q.offset.replace(",", ", "))
+
+
+def _ask_lines(report: AskReport) -> List[str]:
+    """What is already done, recovered or skipped: shown in the dry run and after the confirmed run."""
+    lines: List[str] = []
+    if report.already:
+        lines.append("Already posted by an earlier run (never posted again):")
+        for e in report.already:
+            line = "  %s \u00b7 comment %s" % (e.question.qid, _clean(e.comment_id))
+            if e.changed:
+                line += (" \u00b7 the file's text or node differs from what was posted; a posted comment "
+                         "cannot be edited: to ask again, give the question a new id")
+            lines.append(line)
+    if report.recovered:
+        lines.append("%s (%d); already in Figma (an earlier run's answer was lost), nothing is posted again:"
+                     % ("Recorded without writing" if report.confirmed else "Will be recorded without writing",
+                        len(report.recovered)))
+        lines.extend("  %s \u00b7 comment %s" % (e.question.qid, _clean(e.comment_id)) for e in report.recovered)
+    if report.skipped:
+        lines.append("Skipped (%d); left for the next run or for you to look at:" % len(report.skipped))
+        lines.extend("  %s \u00b7 %s \u00b7 %s" % (e.question.qid, e.question.node_id, e.reason)
+                     for e in report.skipped)
+    return lines
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    ref = parse_file_ref(args.ref)
+    ws = ensure_workspace(Path.cwd(), ref.file_key)  # the plan and asked.json live there
+    try:
+        report = ask(_make_api(), ref.file_key, Path(args.questions_file), ws, confirm=args.confirm)
+    except CodeMismatch as exc:
+        print("error: %s" % _clean(exc), file=sys.stderr)
+        return 2
+    name = _clean(report.questions_name)
+    if not report.confirmed:
+        lines = ["Questions from %s for file %s: %s to post; already posted %d; skipped %d" % (
+            name, ref.file_key, _plural(len(report.planned), "comment", "comments"),
+            len(report.already), len(report.skipped))]
+        if report.planned:
+            lines.append("New comments, in this order (the exact text that will be posted):")
+            for number, entry in enumerate(report.planned, 1):
+                lines.append(_ask_head(entry, number))
+                lines.extend(_full_text_lines(entry.question.text))
+                if "<!--" in entry.question.text:
+                    lines.append('     warning: this question contains "<!--"; Figma shows it as plain text, '
+                                 "visible to the client")
+        lines.extend(_ask_lines(report))
+        if report.error:
+            _emit(lines)
+            print("error: %s" % _clean(report.error), file=sys.stderr)
+            return 1
+        if report.planned or report.recovered:
+            lines.append("confirm code: %s" % report.code)
+            lines.append("Nothing was written. To post exactly this: %s ask %s %s --confirm %s"
+                         % (PROG, _clean(args.ref), _clean(args.questions_file), report.code))
+        else:
+            lines.append("Nothing to post.")
+        _emit(lines)
+        return 0
+
+    lines = ["Posted from %s: %s" % (name, _plural(len(report.posted), "comment", "comments"))]
+    for entry in report.posted:
+        lines.append(_ask_head(entry) + " \u00b7 comment %s" % _clean(entry.comment_id))
+        lines.append("     " + link_of(ref.file_key, entry))
+    lines.extend(_ask_lines(report))
+    _emit(lines)
+    if report.error:
+        print("error: %s" % _clean(report.error), file=sys.stderr)
+        return 1
+    return 0
+
+
 # Figma stores an emoji as a shortcode (API-FACTS: the penguin emoji -> :penguin:, 13 October
 # 2026; the slightly smiling face -> :slightly_smiling_face:, live test 14 October 2026).
 # At least one letter, so "10:30:00" is not one.
@@ -918,6 +1000,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--confirm", metavar="CODE", default=None,
                    help="the code printed by the run without --confirm (bound to the file's exact content)")
     p.set_defaults(func=cmd_publish)
+
+    p = sub.add_parser("ask", help="show the new comments (questions) a questions file would post; with --confirm, post them")
+    p.add_argument("ref", help="Figma file URL or file key")
+    p.add_argument("questions_file", help='JSON array of {"id", "node_id", "text", "offset": {"x", "y"}}')
+    p.add_argument("--confirm", metavar="CODE", default=None,
+                   help="the code printed by the run without --confirm (bound to the file's exact content)")
+    p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("retract", help="delete one of your own replies (shows it first; --confirm deletes)")
     p.add_argument("ref", help="Figma file URL or file key")

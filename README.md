@@ -121,7 +121,7 @@ The designer does this once, in a browser and in their own terminal. The agent o
    | Scope | Why |
    |---|---|
    | `file_comments:read` | read the comments |
-   | `file_comments:write` | post replies and ✅ reactions, delete your own replies |
+   | `file_comments:write` | post replies, ✅ reactions and new questions (`ask`), delete your own replies |
    | `file_content:read` | element names, whether an element still exists, the file's link-sharing setting |
    | `current_user:read` | know which comments are your own; without it `GET /v1/me` answers 403 (checked 12 October 2026) |
 
@@ -170,7 +170,7 @@ fc publish .figma-comments/<file_key>/round-02.md --confirm 3f9a1c07be
 
 If you edited the round file after the summary, `--confirm` exits with 2 and says so ("the round file or its saved summary changed since the dry run"); with no summary for the code it says "no saved summary for this code". In both cases run `publish` without `--confirm` again and read the new summary.
 
-If the command answers that a lock exists (`.publish.lock`), another `publish`, `retract` or `collect` may be running, or an earlier run was killed. The agent stops and asks you; you delete the lock file yourself, only after checking that nothing is running.
+If the command answers that a lock exists (`.publish.lock`), another `publish`, `ask`, `retract` or `collect` may be running, or an earlier run was killed. The agent stops and asks you; you delete the lock file yourself, only after checking that nothing is running.
 
 Finally `fc status <file_key>` lists the threads ready to close, as links that open each comment in Figma. Closing is done by a person: the API cannot resolve comments.
 
@@ -189,6 +189,8 @@ The round file format is described in [references/round-file.md](references/roun
 | `status <ref> --thread <comment_id>` | Finds the thread that holds this comment (root or reply) and prints its root id, element, group, authors with their side, last message, and why it is or is not in the round. Exit 1 if the file has no such comment. | no |
 | `publish <round-file>` | Dry run: the plan (every reply in full with its exact text, every reaction), what is skipped and why, and the confirmation code. Only the latest round file can be published: an older one exits 1 ("this is round NN but the latest is round MM"). Refuses, with exit 1, a reply that holds a control character other than tab and newline (category Cc), a format character other than ZWJ and ZWNJ (category Cf: tag characters, bidirectional controls, LRM, RLM, ALM, zero-width space, word joiner, byte-order mark, soft hyphen and the rest) or a variation selector out of place (anything but one U+FE0E/U+FE0F right after a visible character), as written or after markup is removed, naming the block and the code point. Characters that only look blank (U+3164, U+2800, U+180B to U+180D) are not filtered. Saves the planned writes to `.plans/<code>.json`, and deletes earlier summaries made for the same file bytes. The round file must be in `.figma-comments/<file_key>/` of the current folder. | no |
 | `publish <round-file> --confirm <code>` | Posts the plan if the file is byte-for-byte the one the code was computed from and the saved summary is unchanged (the code covers both), and only the writes the saved summary listed (anything else is skipped as "not in the confirmed summary"); with no saved summary it exits with 2. Holds the workspace lock. Re-reads the thread before every write; stops at the first API error; records each write in `state.json` and then in the round file right after it lands, so a second run resumes without posting twice. | yes |
+| `ask <ref> <questions-file>` | Dry run for new questions to the client: reads a JSON array of `{"id", "node_id", "text", "offset": {"x", "y"}}` (`offset` optional, from the element's top-left corner; `node_id` as `123:456`, a link's `123-456` is accepted), checks that every element exists (Figma would show a comment on a missing one as "Unattached"), and prints every comment in full under the `|` gutter, the questions already posted, and a code. The whole file is refused (exit 1) for a repeated id, an unknown field, a missing element, empty text, text over 2000 characters, more than 50 questions, or a hidden character (the same rule as `publish`). Saves the plan to `.plans/ask-<code>.json`. | no |
+| `ask <ref> <questions-file> --confirm <code>` | Posts each question not yet posted as a new comment pinned to its element (`client_meta` with `node_id` and `node_offset`), only if the questions file and the saved plan are unchanged (otherwise exit 2), and only the questions the plan listed. Holds the workspace lock, checks the elements again, records every question in `asked.json` before and after its request, so a rerun never posts a question twice and a lost answer is recorded instead of posted again. Stops at the first API error. | yes |
 | `retract <ref> <comment_id>` | Shows one of your own replies, what will happen to the thread after the delete, and a code; deletes nothing. Notes that `:name:` codes in the reply are how Figma stores emoji. Refuses root comments and other people's comments. | no |
 | `retract <ref> <comment_id> --confirm <code>` | Deletes that reply. The code is bound to the comment id and its current text. Holds the workspace lock. The round file's marker stays. It says what happens to the thread next: a new or client-replied thread comes back at the next `collect` for the corrected reply; with your ✅ still on it, it is listed as ready to close until you remove the ✅ in Figma; an internal, waiting or resolved thread gets no block; a resolved thread stays resolved (deleting a reply does not reopen it, checked 14 October 2026). | yes |
 | `token set [--created YYYY-MM-DD] [--days N] [--expires YYYY-MM-DD] [--allow-file]` | Asks when the token was created and for how many days (unless `--created`/`--days` or the exact `--expires` date are given; `--expires` cannot be combined with the other two), prints the expiry date, then reads the token with hidden input and stores it. Refuses a creation date in the future and a token that has already expired. `--allow-file` allows a mode-600 file where no credential store exists (not on Windows). Needs a terminal; refuses a piped input and an echoing fallback; Ctrl-C ends with "cancelled; nothing was stored". | no |
@@ -222,7 +224,8 @@ Everything lives in the designer's project, under `.figma-comments/<file_key>/`:
 | `state.json` | collection times, the message ids seen in each thread per round, per-thread kind, action, draft and the ids of published replies |
 | `participants.json` | Figma user ids, display names, client or team, role |
 | `.plans/<code>.json` | the saved summary of a dry run: thread ids, kind of write, a hash of each reply text; deleted after a completed publish and cleaned after 7 days |
-| `.publish.lock` | exists only while `publish --confirm`, `retract --confirm` or `collect` runs; a leftover one means a killed run and is deleted by the designer |
+| `asked.json`, `.plans/ask-<code>.json` | `ask`: each question id with the id of its posted comment (or, during a run, the request in progress), and the saved plan of a dry run (question ids, elements, offsets, a hash of each text); the plan is deleted after a completed run. Removing `asked.json` would let every recorded question be posted again |
+| `.publish.lock` | exists only while `publish --confirm`, `ask --confirm`, `retract --confirm` or `collect` runs; a leftover one means a killed run and is deleted by the designer |
 | `*.tmp`, `.publish.lock.*.new` | short-lived temp files next to the file they replace, removed straight after |
 
 These files contain client names and the text of client comments. The `.gitignore` keeps them out of git; do not commit them by other means, do not paste them into issues, and do not share the folder.
@@ -252,7 +255,8 @@ Each limit says how it was established. "Measured" means a throwaway script call
 - **A round file written by one version may be refused by the next.** Before 1.0 the round file format and `state.json` can change; publish the current round before you upgrade the skill.
 - **A killed run can leave the lock behind.** SIGTERM releases the lock on macOS and Linux; SIGKILL, a power cut or a closed laptop do not, and Windows has no SIGTERM handler. The next run refuses until the designer deletes `.publish.lock`. The tool never deletes it, because it may belong to a run that is still posting.
 - **The code proves what is published, not that a person agreed.** An agent that runs `publish` and `publish --confirm` itself passes every check. That a person approved rests on the rule in `SKILL.md` and on the agent's permission prompt (see [SECURITY.md](SECURITY.md)).
-- **Not supported:** real @-mentions, new root comments, webhooks or background watching, task trackers.
+- **New questions only through `ask`, one comment per element, never edited.** `ask` posts each question once (its id is the key) and never changes or deletes it; `retract` refuses root comments, so a wrong question is deleted by hand in Figma. Figma's own limit on comment length was not measured; `ask` caps a question at 2000 characters and a file at 50 questions, its own limits.
+- **Not supported:** real @-mentions, webhooks or background watching, task trackers.
 
 ## Status
 

@@ -9,8 +9,8 @@ can run the CLI several times against one directory:
 * ``GET /v1/me`` -> ``me.json``; ``GET /v1/files/<key>/nodes`` -> ``nodes.json``
   (reduced to the requested ids; an id the file does not know is ``null``, like a
   deleted node in the real API);
-* ``POST /v1/files/<key>/comments`` appends a reply (id counting from 9100001, user
-  taken from ``me.json``); ``POST .../comments/<id>/reactions`` adds a reaction;
+* ``POST /v1/files/<key>/comments`` appends a reply, or with ``client_meta`` and no
+  ``comment_id`` a root comment (id counting from 9100001, user taken from ``me.json``); ``POST .../comments/<id>/reactions`` adds a reaction;
   ``DELETE .../comments/<id>`` removes a comment (and the replies of a root);
 * every write attempt is appended to ``writes.jsonl`` as ``{method, path, body}``,
   also an attempt that was made to fail;
@@ -231,14 +231,18 @@ class ReplayTransport:
         return {k: me[k] for k in ("handle", "img_url", "id") if k in me}
 
     def _reply(self, file_key: str, body: Any) -> Response:
+        """A reply (``comment_id``) or a new root comment pinned to a node (``client_meta``)."""
         if not isinstance(body, dict) or not isinstance(body.get("message"), str):
             return _error(400, "replay: body needs a string 'message'")
         parent = str(body.get("comment_id") or "")
-        if not parent:
-            return _error(400, "replay: only replies are supported (no comment_id)")
+        meta = body.get("client_meta")
+        if not parent and not (isinstance(meta, dict) and isinstance(meta.get("node_id"), str)
+                               and isinstance(meta.get("node_offset"), dict)):
+            return _error(400, "replay: a body needs a comment_id (reply) or a client_meta with "
+                               "node_id and node_offset (root comment)")
         data = self._load_live()
         comments = data["comments"]
-        if not any(str(c.get("id")) == parent for c in comments):
+        if parent and not any(str(c.get("id")) == parent for c in comments):
             return _error(404, "replay: comment %s not found" % parent)
         highest = FIRST_REPLY_ID - 1
         for c in comments:
@@ -246,6 +250,11 @@ class ReplayTransport:
                 highest = max(highest, int(c.get("id")))
             except (TypeError, ValueError):
                 pass
+        # A reply gets client_meta {x: 0, y: 0} (API-FACTS); a root keeps the node it was pinned
+        # to, like the root in shape-comments.json. An unknown node id is accepted, as in Figma.
+        client_meta: Dict[str, Any] = {"x": 0, "y": 0}
+        if not parent and isinstance(meta, dict):  # checked above; repeated for the type checker
+            client_meta = {"node_id": meta["node_id"], "node_offset": meta["node_offset"], "stable_path": None}
         reply = {
             "id": str(highest + 1),
             "uuid": None,
@@ -256,7 +265,7 @@ class ReplayTransport:
             "resolved_at": None,
             "message": body["message"],
             "reactions": [],
-            "client_meta": {"x": 0, "y": 0},
+            "client_meta": client_meta,
             "order_id": None,
         }
         comments.append(reply)

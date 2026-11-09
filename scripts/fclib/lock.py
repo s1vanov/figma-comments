@@ -1,4 +1,4 @@
-"""The workspace lock: one writer at a time in ``<ws>/`` (publish, retract and collect).
+"""The workspace lock: one writer at a time in ``<ws>/`` (publish, ask, retract and collect).
 
 ``<ws>/.publish.lock`` holds "pid N" and "since <UTC time>". It is filled in a temp file
 first and then hard-linked to its name, so another process never sees an empty lock; the
@@ -30,7 +30,7 @@ LOCK_NAME = ".publish.lock"
 
 
 class LockBusy(ValueError):
-    """Another publish, retract or collect holds the workspace lock. Nothing was written."""
+    """Another publish, ask, retract or collect holds the workspace lock. Nothing was written."""
 
 
 class Terminated(SystemExit):
@@ -52,7 +52,7 @@ def _busy(path: Path) -> LockBusy:
     except OSError:
         pass
     return LockBusy(
-        "another publish, retract or collect seems to be running (lock %s, pid %s, since %s). "
+        "another publish, ask, retract or collect seems to be running (lock %s, pid %s, since %s). "
         "Ask the person running the tool whether a run is still going; "
         "do not delete the lock yourself." % (path, pid, since)
     )

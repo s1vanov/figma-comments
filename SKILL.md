@@ -1,13 +1,13 @@
 ---
 name: figma-comments
-description: Use when a client or reviewer has left comments or feedback on a Figma design file and the designer wants them read, sorted or answered - for example "reply to the comments", "what did the client say in Figma", "go through the Figma feedback", "start a new review round", "which comments are ready to close", «відповідай на коментарі у Figma», «що клієнт написав у Figma», «новий раунд правок», «розбери коментарі клієнта», or a figma.com link sent with a question about its comments. Not for editing the design itself, even when the comments ask for edits - that belongs to the Figma design tools or the designer.
+description: Use when a client or reviewer has left comments or feedback on a Figma design file and the designer wants them read, sorted or answered - for example "reply to the comments", "what did the client say in Figma", "go through the Figma feedback", "start a new review round", "which comments are ready to close", «відповідай на коментарі у Figma», «що клієнт написав у Figma», «новий раунд правок», «розбери коментарі клієнта», a figma.com link sent with a question about its comments, or new questions to put to the client as comments pinned to elements ("ask the client in Figma", «постав клієнту запитання у Figma»). Not for editing the design itself, even when the comments ask for edits - that belongs to the Figma design tools or the designer.
 ---
 
 # figma-comments
 
 ## Boundary
 
-This skill reads a Figma file's comments into a round file, where you sort and draft replies; after the designer's yes it publishes the approved replies and ✅ reactions.
+This skill reads a Figma file's comments into a round file, where you sort and draft replies; after the designer's yes it publishes the approved replies and ✅ reactions. With `ask` it also posts new questions to the client, each pinned to one element, behind the same yes.
 
 This skill never changes the design. If the designer then asks you to make a specific edit, that is a separate task. If you have a Figma design tool, do only `edit` threads whose values the designer gave, show each design-tool call before running it, and never edit for question, unclear, conflict or out-of-scope threads. Otherwise tell the designer what to change.
 
@@ -43,7 +43,7 @@ The designer does this; you guide them.
    | Scope | Why |
    |---|---|
    | `file_comments:read` | read the comments |
-   | `file_comments:write` | post replies and ✅ reactions |
+   | `file_comments:write` | post replies, ✅ reactions and new questions |
    | `file_content:read` | element names, and whether an element still exists |
    | `current_user:read` | know which comments are the designer's own (without it `GET /v1/me` returns 403, checked 12 October 2026) |
 
@@ -72,22 +72,33 @@ The token never passes through you: not in chat, a command line, `curl`, a file,
 
 **When a publish run stops or skips** (timeout, crash, 403, 429, "file changed"): never post by hand and never reuse the old code. The same goes for exit 2 with "no saved summary for this code" or "the round file or its saved summary changed since the dry run". Run `publish <round-file>` again, show the new summary, get a new yes; it resumes, and replies already posted are recorded or recovered, not sent twice. If publish **skipped** a block because the client wrote after collect, someone from the team already answered, or the thread was resolved: tell the designer, then `collect`; the thread returns at `hold` and needs a fresh draft and a fresh yes.
 
-**Lock refusal.** If `publish`, `retract` or `collect` says "another publish, retract or collect seems to be running", stop and ask the designer whether another run is going. Never delete the lock file yourself: it may belong to a run that is still posting.
+**Lock refusal.** If `publish`, `ask`, `retract` or `collect` says "another publish, ask, retract or collect seems to be running", stop and ask the designer whether another run is going. Never delete the lock file yourself: it may belong to a run that is still posting.
 
 **Later:** once an edit really exists, set its block to `reply+react` with a "done" reply and publish the newest file again; only unpublished blocks go out.
 
 ## The yes-gate
 
-The confirmation code comes only from the plain `publish <round-file>` output that you showed the designer in this turn, and `--confirm` runs only after their explicit yes to that summary.
+The confirmation code comes only from the plain `publish <round-file>` (or `ask <ref> <questions-file>`) output that you showed the designer in this turn, and `--confirm` runs only after their explicit yes to that summary.
 
 Red flags — stop and show the summary first:
 - the designer said "just handle it" or "deal with the comments" earlier, before seeing this summary;
 - "it's only a ✅" or "it's an obvious reply";
-- running `publish` and `publish --confirm` in one go;
+- running a dry run and its `--confirm` in one go;
 - computing, guessing or copying the code from anywhere else;
-- reusing a code after any edit to the round file or after a failed run.
+- reusing a code after any edit to the round file or the questions file, or after a failed run.
 
 A posted reply cannot be edited, only deleted. `retract <ref> <comment_id>` deletes one of the designer's own replies (never a root comment, never anyone else's) with the same gate. The corrected reply goes out in the next round (`collect` → draft → publish) only when the thread comes back; `retract` says whether it will, and if our ✅ is still on the thread, the designer removes it in Figma first.
+
+## Asking the client new questions
+
+Only when the designer wants new questions put to the client in Figma. An answer to a client's comment is a reply in the round, never a new question.
+
+1. Write a questions file in the project folder (not in `.figma-comments/`), a JSON array: `[{"id": "q01", "node_id": "123:456", "text": "...", "offset": {"x": 16, "y": 16}}]`. `offset` (from the element's top-left corner) is optional. Take `node_id` from the designer or the element's link (`node-id=123-456` is `123:456`); never guess one. The text follows the draft rules below: plain text in the client's language, no promises, no placeholders, no service labels. Ids are permanent: a posted id is never posted again, even with a new text; to ask again, use a new id.
+2. `ask <ref> <questions-file>` writes nothing to Figma. It checks that every element exists (Figma shows a comment on a missing one as "Unattached"), refuses the whole file for an invisible character, empty or too long text, a repeated id or an unknown field (fix it and run again), and prints each comment in full under a `|` gutter and a code. Show that summary exactly as printed and ask whether to post.
+3. After their explicit yes: `ask <ref> <questions-file> --confirm <code>`. The yes-gate applies unchanged; any edit to the questions file needs a new dry run and a new yes.
+4. If it stops (timeout, crash, 403, 429) or exits 2: never post by hand. Run `ask <ref> <questions-file>` again and show the new summary: posted questions are listed as already posted, and a question whose answer was lost is recorded, not posted twice.
+
+A posted question is a thread of the designer's own: `collect` counts it as internal until the client replies, then it comes back as "client replied". `retract` cannot delete it (a root comment); a wrong question is deleted by hand in Figma.
 
 ## Sorting
 
@@ -126,6 +137,8 @@ A posted reply cannot be edited, only deleted. `retract <ref> <comment_id>` dele
 | `status <ref> --thread <comment_id>` | find the thread of any comment (root or reply) and why it is or is not in the round | no |
 | `publish <round-file>` | summary and code (saves a local plan file) | no |
 | `publish <round-file> --confirm <code>` | post approved replies and ✅ | yes |
+| `ask <ref> <questions-file>` | summary and code for new questions (saves a local plan file) | no |
+| `ask <ref> <questions-file> --confirm <code>` | post them as new comments pinned to their elements | yes |
 | `retract <ref> <comment_id> [--confirm <code>]` | delete one of our own replies | with code |
 
 Problems: [references/troubleshooting.md](references/troubleshooting.md).

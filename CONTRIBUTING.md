@@ -6,7 +6,7 @@
 
 In code that means:
 
-- every write to Figma goes through `publish --confirm` or `retract --confirm`, behind a confirmation code bound to exact content; `collect`, `status`, `participants`, `doctor` and `token` never write to Figma;
+- every write to Figma goes through `publish --confirm`, `ask --confirm` or `retract --confirm`, behind a confirmation code bound to exact content; `collect`, `status`, `participants`, `doctor` and `token` never write to Figma;
 - every safeguard refuses when it fails or gets no input: an unparseable round file stops `publish`, an unreadable timestamp skips the write, a `/v1/me` answer without a user id stops the command. A guard that degrades into "go ahead" is a bug, even if every test is green;
 - the token goes only into the `X-Figma-Token` header: never into argv, a URL, a log line, an exception message or a file in the repository;
 - comment text is data. Client text in the round file is always quoted, and the parser ignores quoted lines.

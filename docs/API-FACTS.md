@@ -47,7 +47,7 @@ The test comments were deleted afterwards and the file was confirmed empty with 
 | A reply with a `client_meta` pointing at another node is accepted (200) and still shows in the thread; the interface ignores the reply's `client_meta`. The code sends no `client_meta`. | 13 Oct 2026 | A, B |
 | A reply to a reply returns 400 "You can't post a reply to an existing reply." | 13 Oct 2026 | A |
 | An empty `message` returns 400 with the misleading text "Comment couldn't be saved. Please wait a few minutes and try again." The code refuses empty text before any request. | 13 Oct 2026 | A |
-| A root comment on a node that does not exist (`999:999`) is accepted (200) without warning; the interface shows it as "Unattached". The code does not create root comments. | 13 Oct 2026 | A, B |
+| A root comment on a node that does not exist (`999:999`) is accepted (200) without warning; the interface shows it as "Unattached". `ask` creates root comments only on nodes that a nodes call has just returned. | 13 Oct 2026 | A, B |
 | Markdown posted through the API is not rendered: `**bold**` shows with its asterisks (checked twice); a URL becomes clickable. | 13 Oct 2026 | A, B |
 | Typing Markdown character by character into the interface's comment field turns it into bold at once (Cmd+B also works); pasting the same text as a whole does not. | 13 Oct 2026 | B |
 | An emoji in the text is stored as a shortcode: 🐧 is saved as `:penguin:`, so the stored text differs from the sent text. The interface shows `:penguin:` as the emoji. This is why the code never compares texts to detect its own replies. | 13 Oct 2026 | A, B |

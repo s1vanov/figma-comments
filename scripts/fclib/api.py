@@ -113,6 +113,18 @@ class FigmaAPI:
             body={"message": message, "comment_id": root_id},
         )
 
+    def ask(self, file_key: str, message: str, node_id: str, x: float, y: float) -> Dict[str, Any]:
+        """A new root comment pinned to ``node_id`` at ``(x, y)`` from the node's top-left corner.
+
+        Figma accepts a node id it does not know and shows the comment as "Unattached"
+        (API-FACTS, 13 October 2026), so the caller must check the node exists first.
+        """
+        return self._client.call(
+            "POST",
+            "/v1/files/%s/comments" % _q(file_key),
+            body={"message": message, "client_meta": {"node_id": node_id, "node_offset": {"x": x, "y": y}}},
+        )
+
     def react(self, file_key: str, comment_id: str) -> None:
         self._client.call(
             "POST",

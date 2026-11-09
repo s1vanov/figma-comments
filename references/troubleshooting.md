@@ -107,9 +107,9 @@ A comment in the API answer has no usable `created_at`, author (`user`, `user.id
 
 `collect` and `status` print `warning: N comment(s) with an invalid id skipped` when Figma returns a comment id that is not made of digits. Such a comment is left out everywhere. Tell the designer; nothing to fix locally.
 
-## "another publish, retract or collect seems to be running"
+## "another publish, ask, retract or collect seems to be running"
 
-`publish --confirm`, `retract --confirm` and `collect` take the lock `.figma-comments/<file_key>/.publish.lock`, so two runs never post or save state at the same time. The message names the lock file, the process id and the start time. Stop and ask the designer whether another run is going (another terminal, another agent). Never delete the lock file yourself: if it belongs to a run that is still posting, a second run can post the same reply twice. Only the designer removes it, once they are sure nothing is running.
+`publish --confirm`, `ask --confirm`, `retract --confirm` and `collect` take the lock `.figma-comments/<file_key>/.publish.lock`, so two runs never post or save state at the same time. The message names the lock file, the process id and the start time. Stop and ask the designer whether another run is going (another terminal, another agent). Never delete the lock file yourself: if it belongs to a run that is still posting, a second run can post the same reply twice. Only the designer removes it, once they are sure nothing is running.
 
 ## `collect` says a round file already exists
 

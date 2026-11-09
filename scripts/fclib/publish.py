@@ -88,6 +88,7 @@ PLANS_DIR = ".plans"
 PLAN_MAX_AGE = 7 * 24 * 3600  # seconds; older saved summaries are deleted by a dry run
 _ID_CHARS = frozenset("0123456789")
 _CODE_RE = re.compile(r"[0-9a-f]{%d}" % CODE_LEN)
+RESUMABLE = ("publish", "ask")  # commands whose next run resumes without posting twice
 
 
 class SkipReason(Enum):
@@ -193,13 +194,13 @@ def stop_message(exc: BaseException, command: str) -> str:
             return ("Figma refused the token (%s); stopped, nothing more was sent. "
                     "Check the token and its scopes with: figma_comments.py doctor <file>" % exc)
         if exc.status == 429:
-            if command == "publish":
-                return "rate limited; run publish again later (it resumes)"
+            if command in RESUMABLE:
+                return "rate limited; run %s again later (it resumes)" % command
             return "rate limited; run %s again later" % command
-    if command == "publish":
+    if command in RESUMABLE:
         return ("%s; stopped, nothing more was sent and nothing is retried automatically. "
-                "Run publish again to continue: what is already posted is recorded and is "
-                "not posted twice" % exc)
+                "Run %s again to continue: what is already posted is recorded and is "
+                "not posted twice" % (exc, command))
     return "%s; stopped, nothing is retried automatically" % exc
 
 

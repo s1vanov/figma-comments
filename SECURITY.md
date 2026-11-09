@@ -11,8 +11,9 @@ What counts as a vulnerability:
 - the token reaching stdout, stderr, a log, an exception message, a process argument list, a file in the repository or a host other than `api.figma.com`;
 - anything written to Figma without a matching confirmation code, or anything written that is not in the round file the code was computed from, or that the confirmed summary did not list;
 - a reply posted into a resolved thread, posted twice, or a deleted comment that was not the token owner's own reply;
+- a question from `ask` posted twice, posted on an element that does not exist, or posted when it was not in the questions file and the saved plan the code was computed from;
 - comment text that changes what `publish` posts (forging a block, a field or a marker);
-- two writers working in one workspace at the same time (a second `publish --confirm`, `retract --confirm` or `collect` getting past the lock);
+- two writers working in one workspace at the same time (a second `publish --confirm`, `ask --confirm`, `retract --confirm` or `collect` getting past the lock);
 - workspace files read or written anywhere other than `.figma-comments/<file_key>/` under the project folder, including through a symbolic link;
 - a reply that reaches Figma holding a control character other than tab and newline (category Cc), a format character other than ZWJ and ZWNJ (category Cf) or a variation selector out of place, or such a character hidden in the round file or the dry-run summary where a reviewer cannot see it. Other characters that merely look blank, such as U+3164 (Hangul filler), U+2800 (braille blank) or the Mongolian free variation selectors U+180B to U+180D, are not filtered, so text written with them is not covered by this promise.
 
@@ -24,16 +25,17 @@ What counts as breakage, not a vulnerability: a command that stops working becau
 
 | Request | Used by |
 |---|---|
-| `GET /v1/me` | `collect`, `status`, `publish`, `retract`, `doctor` (who owns the token) |
-| `GET /v1/files/:key/comments?as_md=true` | `collect`, `status`, `publish` (before every write), `retract`, `doctor`, `participants set` (to fill in a handle) |
-| `GET /v1/files/:key/nodes?ids=…&depth=1` | `collect` (element names), `status --thread` (the thread's element name), `doctor` (link-sharing setting) |
+| `GET /v1/me` | `collect`, `status`, `publish`, `ask`, `retract`, `doctor` (who owns the token) |
+| `GET /v1/files/:key/comments?as_md=true` | `collect`, `status`, `publish` (before every write), `ask` (before posting, to find a lost answer), `retract`, `doctor`, `participants set` (to fill in a handle) |
+| `GET /v1/files/:key/nodes?ids=…&depth=1` | `collect` (element names), `status --thread` (the thread's element name), `ask` (every element of a question must exist), `doctor` (link-sharing setting) |
 | `POST /v1/files/:key/comments` with `{"message", "comment_id"}` | `publish --confirm` only |
+| `POST /v1/files/:key/comments` with `{"message", "client_meta": {"node_id", "node_offset"}}` | `ask --confirm` only |
 | `POST /v1/files/:key/comments/:id/reactions` with `{"emoji": ":white_check_mark:"}` | `publish --confirm` only |
 | `DELETE /v1/files/:key/comments/:id` | `retract --confirm` only |
 
 Redirects are not followed, so the token header is never forwarded to another host. The `curl` fallback refuses them too (see below).
 
-**Local files it reads:** the round file you pass to `publish`; `.figma-comments/<file_key>/state.json`, `participants.json`, the previous `round-NN.md` and, for `--confirm`, the saved summary `.plans/<code>.json` under the current directory; the token file `~/.config/figma-comments/token.json` if it exists and passes the checks under [Token handling](#token-handling).
+**Local files it reads:** the round file you pass to `publish`; the questions file you pass to `ask`, and `asked.json` and `.plans/ask-<code>.json`; `.figma-comments/<file_key>/state.json`, `participants.json`, the previous `round-NN.md` and, for `--confirm`, the saved summary `.plans/<code>.json` under the current directory; the token file `~/.config/figma-comments/token.json` if it exists and passes the checks under [Token handling](#token-handling).
 
 **Local files it writes.** Every file below is inside `.figma-comments/<file_key>/` under the project folder (the folder you run the command from), except the two noted at the end of the list.
 
@@ -41,7 +43,8 @@ Redirects are not followed, so the token header is never forwarded to another ho
 - `round-NN.md`: created by `collect`, which never overwrites one (it writes a temp file `round-NN.md.<random>.tmp` and hard-links it to the final name); `publish --confirm` then rewrites the file to add a marker line to each block it posted (temp file `.round-NN.md.<random>.tmp`, then rename);
 - `state.json` and `participants.json`: each written to a `.tmp` temp file in the same directory (`state.json.<random>.tmp`, `.participants-<random>.tmp`), then renamed;
 - `.plans/<code>.json`: the saved summary a plain `publish` leaves for `--confirm`: the round name and, per planned write, the thread id, the kind of write and a SHA-256 of the exact text (not the text itself). Written through a `.tmp` temp file. It is a local file; a dry run still sends nothing to Figma;
-- `.publish.lock`, while `publish --confirm`, `retract --confirm` or `collect` runs, and its temp file `.publish.lock.<random>.new` (see [One writer at a time](#one-writer-at-a-time)).
+- `asked.json` and `.plans/ask-<code>.json` (`ask`): each question id with its posted comment id, or with the ids of the token owner's comments on its element while its request is in progress; the saved plan holds question ids, elements, offsets and a SHA-256 of each text. Both written through `.tmp` temp files;
+- `.publish.lock`, while `publish --confirm`, `ask --confirm`, `retract --confirm` or `collect` runs, and its temp file `.publish.lock.<random>.new` (see [One writer at a time](#one-writer-at-a-time)).
 
 Outside the workspace:
 
@@ -114,7 +117,7 @@ An unreadable timestamp counts as "after the collection time", which skips the w
 
 ## One writer at a time
 
-`publish --confirm`, `retract --confirm` and `collect` each take an exclusive lock, the file `.figma-comments/<file_key>/.publish.lock`, for the whole run. It holds the process id and the start time. The file is written in full under a temporary name (`.publish.lock.<random>.new`) and then hard-linked to the lock name, so taking it is atomic and another process never reads it half-written (where hard links are unavailable, `O_EXCL` is used). The first `collect` for a file, before its workspace exists, has nothing to lock against. `publish` without `--confirm`, `retract` without `--confirm`, `status` and `participants` do not take it.
+`publish --confirm`, `ask --confirm`, `retract --confirm` and `collect` each take an exclusive lock, the file `.figma-comments/<file_key>/.publish.lock`, for the whole run. It holds the process id and the start time. The file is written in full under a temporary name (`.publish.lock.<random>.new`) and then hard-linked to the lock name, so taking it is atomic and another process never reads it half-written (where hard links are unavailable, `O_EXCL` is used). The first `collect` for a file, before its workspace exists, has nothing to lock against. `publish`, `ask` and `retract` without `--confirm`, `status` and `participants` do not take it.
 
 If the lock exists, the command refuses with exit 1 and writes nothing. **The lock is never removed automatically**, because it may belong to a run that is still posting. A normal end, an error and, on POSIX, SIGTERM release it; SIGKILL, a power cut or a closed laptop can leave it behind (Windows installs no SIGTERM handler). Only the designer deletes a leftover lock, after checking that no run is going. `SKILL.md` tells the agent to stop and ask the designer on a lock refusal and never to delete the lock itself; that part depends on the agent following its instructions.
 
