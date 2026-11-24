@@ -4,6 +4,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Every github/codeql-action step must run the same version: CodeQL failed with "Loaded a
+    # configuration file for version '4.39.0', but running version '4.39.4'" after separate
+    # Dependabot PRs moved init and analyze to different versions (24 November 2026).
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
   - package-ecosystem: pip
     directory: /.github/requirements
     schedule:
