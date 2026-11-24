@@ -24,7 +24,7 @@ A change that touches any of these needs a test that breaks the safeguard on pur
 
 From the repository root. Each block is what one CI job runs.
 
-Tests (CI matrix: `ubuntu-latest`, `macos-latest`, `windows-latest` × Python `3.9` and `3.13`):
+Tests (CI matrix: `ubuntu-latest`, `macos-latest`, `windows-latest` × Python `3.9` and `3.13`; on Linux, Python `3.9` runs on `ubuntu-24.04`, because `ubuntu-latest` is Ubuntu 26.04 and has no Python 3.9 build):
 
 ```
 python -m unittest discover -s tests -v

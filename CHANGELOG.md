@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 ### Changed
 
 - The workspace lock refusal reads "another publish, ask, retract or collect seems to be running".
+- CI runs the Python 3.9 tests on Linux on `ubuntu-24.04` instead of `ubuntu-latest`. `ubuntu-latest` is now Ubuntu 26.04, and `actions/setup-python` has no Python 3.9 build for it. The supported Python versions do not change.
 
 ## [0.1.0] - 2026-10-19
 
