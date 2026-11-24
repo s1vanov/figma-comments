@@ -22,6 +22,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.13"]
+        # ubuntu-latest became Ubuntu 26.04, and actions/setup-python has no Python 3.9 build for
+        # it: the job failed with "The version '3.9' with architecture 'x64' was not found for
+        # Ubuntu 26.04" (run 44282890977, 18 November 2026). versions-manifest.json lists 3.9.25
+        # for Linux 22.04 and 24.04 only (checked 24 November 2026). So Python 3.9 runs on 24.04.
+        exclude:
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python: "3.9"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
